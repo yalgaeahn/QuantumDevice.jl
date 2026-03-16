@@ -1,0 +1,8 @@
+.DS_Store
+.julia_depot/
+.juliaup/
+.spack/
+build/
+results/
+figures/
+*.log

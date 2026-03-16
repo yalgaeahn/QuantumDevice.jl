@@ -1,0 +1,101 @@
+{
+  "design_name": "qmetal_single_transmon",
+  "design_origin": "qiskit-metal semantic parameter export",
+  "geometry": {
+    "chip_size_um": [
+      4010.0,
+      3710.0
+    ],
+    "simulation_box_um": [
+      4000.0,
+      3700.0
+    ],
+    "cpw_trace_um": 10.0,
+    "cpw_gap_um": 6.0,
+    "bridge_spacing_um": 300.0,
+    "readout_length_um": 2700.0,
+    "feedline_attach_offset_um": 0.0,
+    "claw_gap_um": 6.0,
+    "claw_width_um": 34.0,
+    "claw_length_um": 121.0,
+    "shield_width_um": 2.0,
+    "coupling_gap_um": 5.0,
+    "coupling_length_um": 400.0,
+    "hanger_length_um": 500.0,
+    "bend_radius_um": 50.0,
+    "meander_turns": 5,
+    "resonator_total_length_um": 5000.0,
+    "transmon_cap_width_um": 24.0,
+    "transmon_cap_length_um": 620.0,
+    "transmon_cap_gap_um": 30.0,
+    "junction_gap_um": 12.0,
+    "island_rounding_um": 0.0
+  },
+  "junction": {
+    "inductance_h": 1.486e-8,
+    "capacitance_f": 5.5e-15,
+    "direction": "+Y"
+  },
+  "ports": {
+    "impedance_ohm": 50.0,
+    "port_1_direction": "+X",
+    "port_2_direction": "+X"
+  },
+  "materials": {
+    "substrate_name": "sapphire",
+    "vacuum_permittivity": 1.0,
+    "vacuum_permeability": 1.0,
+    "substrate_permittivity": [
+      9.3,
+      9.3,
+      11.5
+    ],
+    "substrate_permeability": [
+      0.99999975,
+      0.99999975,
+      0.99999979
+    ],
+    "substrate_loss_tangent": [
+      3.0e-5,
+      3.0e-5,
+      8.6e-5
+    ],
+    "material_axes": [
+      [
+        0.8,
+        0.6,
+        0.0
+      ],
+      [
+        -0.6,
+        0.8,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ]
+  },
+  "solver": {
+    "order_default": 1,
+    "mesh_order": 2,
+    "amr_max_iterations": 0,
+    "eigenmode_count": 2,
+    "target_ghz": 2.5,
+    "linear_tol": 1.0e-7,
+    "linear_max_iterations": 500,
+    "eigenmode_tol": 1.0e-6,
+    "save_fields": 2
+  },
+  "validation": {
+    "parameter_tolerance_um": 1.0e-6,
+    "geometry_tolerance_um": 5.0
+  },
+  "approximations": [
+    "The qiskit-metal source is normalized into the DeviceLayout ExamplePDK rectangular transmon plus clawed meander resonator topology.",
+    "The editable Julia case is the maintained source for simulation after migration; GDS is used only as a fidelity check when available.",
+    "Port directions are recorded explicitly in the migration spec and passed through to the generated Palace config."
+  ]
+}

@@ -1,0 +1,7 @@
+packages:
+  blas:
+    require:
+    - openblas
+  lapack:
+    require:
+    - openblas
