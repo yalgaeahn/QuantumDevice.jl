@@ -1,4 +1,4 @@
-# QuantumDevice
+# QuantumDevice.jl
 
 Native macOS scaffold for `DeviceLayout.jl`, `Palace`, and ParaView on Apple Silicon.
 
