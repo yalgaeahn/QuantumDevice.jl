@@ -8,32 +8,32 @@ It uses:
 
 - `DeviceLayout.jl` for layout generation, schematic-driven construction, and mesh/GDS creation
 - PALACE for eigenmode solves
-- ParaView for result inspection and static rendering
+- ParaView and Gmsh for interactive result and mesh inspection
 
-The repository should eventually become a reusable Julia package, but the current architecture is still an execution scaffold around four script-first case families, including two migration-oriented flows.
+The repository should eventually become a reusable Julia package, but the current architecture is still an execution scaffold around five script-first case families, including two migration-oriented flows.
 
 ## System Flow
 
 ```text
 user
-  -> scripts/build_transmon.sh or scripts/build_star_transmon.sh or scripts/build_qmetal_transmon.sh or scripts/build_trailblazer_fullchip.sh or scripts/build_trailblazer_q1_slice.sh
+  -> scripts/build_transmon.sh or scripts/build_qpu17_reference.sh or scripts/build_star_transmon.sh or scripts/build_qmetal_transmon.sh or scripts/build_trailblazer_fullchip.sh or scripts/build_trailblazer_slice.sh
   -> scripts/export_trailblazer_spec.sh (for the Berkeley notebook-backed migration)
   -> scripts/julia.sh
   -> Julia build script
   -> src/QuantumDevice.jl / src/TrailBlazer.jl
-  -> DeviceLayout.jl geometry + mesh generation
-  -> build/<case>/device.msh or device.gds or palace.json
+  -> DeviceLayout.jl schematic graph + planned layout + mesh generation
+  -> build/<case>/schematic_graph.svg + layout.svg + device.gds + optional device.msh/palace.json
 
 user
-  -> scripts/run_palace.sh or scripts/run_star_transmon.sh or scripts/run_qmetal_transmon.sh or scripts/run_trailblazer_q1_slice.sh
+  -> scripts/run_palace.sh or scripts/run_star_transmon.sh or scripts/run_qmetal_transmon.sh or scripts/run_trailblazer_slice.sh
   -> palace
   -> results/<case>/eig.csv and related CSV outputs
   -> results/<case>/paraview/*
 
 user
-  -> scripts/open_paraview.sh or scripts/render_star_transmon_visuals.sh
-  -> ParaView / pvpython
-  -> figures/<case>/*
+  -> scripts/open_paraview.sh or scripts/open_trailblazer_slice_mesh.sh
+  -> ParaView / Gmsh
+  -> interactive inspection of results/<case>/* or build/<case>/device.msh
 ```
 
 ## Current Components
@@ -46,7 +46,7 @@ This keeps dependency resolution local to the workspace.
 
 ### 2. Case Builder Layer
 
-There are currently four maintained case builders.
+There are currently five maintained case builders.
 
 `scripts/build_transmon.jl`
 
@@ -54,7 +54,15 @@ There are currently four maintained case builders.
 - locates the installed `DeviceLayout.jl` package
 - stages the upstream `SingleTransmon.jl` example into `build/transmon/work/`
 - runs the example to generate mesh and GDS artifacts
+- emits `schematic_graph.svg` and `layout.svg` through a repo-local source-aligned adapter
 - patches the PALACE config so output paths point into this workspace
+
+`scripts/build_qpu17_reference.jl`
+
+- activates the repository environment
+- stages the upstream `DemoQPU17` example into `build/qpu17-reference/work/`
+- runs the upstream schematic-driven example locally
+- emits `schematic_graph.svg`, `layout.svg`, and `device.gds` as the repo reference contract for top-level-source inspection
 
 `scripts/build_star_transmon.jl`
 
@@ -76,17 +84,20 @@ There are currently four maintained case builders.
 - activates the repository environment
 - loads the normalized Berkeley TrailBlazer full-chip spec from `inputs/qiskit-metal/trailblazer-fullchip/trailblazer_fullchip_spec.json`
 - reconstructs the full 8-qubit layout natively with custom transmon, launchpad, open/short termination, and interdigital-cap components from `src/TrailBlazer.jl`
-- writes the full-chip GDS and hook registry under `build/trailblazer-fullchip/`
+- assembles a real `SchematicGraph`, runs `plan`, and validates with `check!`
+- writes the full-chip schematic graph, layout SVG, GDS, and hook registry under `build/trailblazer-fullchip/`
 
-`scripts/build_trailblazer_q1_slice.jl`
+`scripts/build_trailblazer_slice.jl`
 
 - activates the repository environment
 - loads the same Berkeley TrailBlazer full-chip spec
-- derives the `Q_1` plus Purcell slice from the full-chip component graph
-- emits mesh, GDS, hook registry, and PALACE JSON under `build/trailblazer-q1-purcell-slice/`
+- derives a target-qubit local-context slice from full-chip graph connectivity
+- emits schematic graph, layout SVG, mesh, GDS, hook registry, slice membership, and PALACE JSON under `build/trailblazer-q1-local-context/`, `build/trailblazer-q2-local-context/`, and related per-qubit output directories
 
 Both builders write into:
 
+- `build/<case>/schematic_graph.svg`
+- `build/<case>/layout.svg`
 - `build/<case>/device.msh`
 - `build/<case>/device.gds`
 - `build/<case>/palace.json`
@@ -107,18 +118,22 @@ Responsibilities:
 
 `scripts/run_qmetal_transmon.sh` is the corresponding thin wrapper for the migrated qiskit-metal case.
 
-`scripts/run_trailblazer_q1_slice.sh` is the thin wrapper for the Berkeley `Q_1` Purcell slice.
+`scripts/run_trailblazer_slice.sh` is the generic runtime wrapper for Berkeley local-context slices, and `scripts/run_trailblazer_q1_slice.sh` remains as a thin `Q_1` compatibility alias.
 
-### 4. Visualization Layer
+### 4. Inspection Layer
 
-Interactive inspection is handled by `scripts/open_paraview.sh` and `scripts/open_star_transmon.sh`.
+Build inspection is source-aligned and lives under `build/<case>/`:
 
-Static rendering for the star-transmon case is handled by:
+- `schematic_graph.svg` is the first artifact for checking component placement and connectivity
+- `layout.svg` is the second artifact for checking rendered geometry
+- `device.msh` is opened directly in Gmsh when the case includes meshing
 
-- `scripts/render_star_transmon_visuals.sh`
-- `scripts/render_star_transmon_visuals.py`
+Interactive result inspection is handled by:
 
-The Python script reads PALACE CSV and ParaView data products and generates summary figures under `figures/star-transmon/`.
+- `scripts/open_paraview.sh`
+- `scripts/open_star_transmon.sh`
+- `scripts/open_trailblazer_slice.sh`
+- `scripts/open_trailblazer_slice_mesh.sh`
 
 ### 5. Machine Configuration Layer
 
@@ -138,9 +153,8 @@ This layer is intentionally explicit because PALACE is an external native depend
 - `cases/`: case notes and context
 - `inputs/`: staged migration reference inputs and normalized specs
 - `src/`: emerging shared Julia implementation, including the Berkeley TrailBlazer component and build logic
-- `build/`: generated meshes, staged scripts, and PALACE inputs
+- `build/`: source-aligned build artifacts such as `schematic_graph.svg`, `layout.svg`, `device.gds`, `device.msh`, and staged inputs
 - `results/`: PALACE outputs
-- `figures/`: rendered outputs
 - `benchmarks/`: captured runtime and output comparisons
 - `spack-config/` and `spack-repo-scope/`: PALACE installation/runtime configuration
 
@@ -152,7 +166,7 @@ This layer is intentionally explicit because PALACE is an external native depend
 - The qiskit-metal migration flow currently depends on a checked-in normalized spec rather than direct qiskit-metal API ingestion.
 - The Berkeley TrailBlazer migration depends on a checked-in staged notebook copy plus a normalized JSON spec emitted by `scripts/export_trailblazer_spec.py`.
 - The PALACE runtime remains an external process boundary.
-- Visualization depends on ParaView rather than a Julia-native plotting stack.
+- Result inspection depends on ParaView and mesh inspection depends on Gmsh.
 - The documented stable runtime is machine-specific: MPI-only with one OpenMP thread per rank.
 
 ## Target Architecture
@@ -165,7 +179,7 @@ src/QuantumDevice.jl
   -> Cases
   -> Palace
   -> Results
-  -> Visualization or Reporting
+  -> SourceAlignedArtifacts
 
 scripts/*
   -> thin wrappers over package entrypoints
@@ -178,7 +192,7 @@ Recommended module responsibilities:
 - `QuantumDevice.Migration`: notebook-to-spec exporters and validation helpers for notebook-backed migrations
 - `QuantumDevice.Palace`: config generation and solver invocation helpers
 - `QuantumDevice.Results`: CSV parsing and summary extraction
-- `QuantumDevice.Reporting`: figure generation and benchmark summaries
+- `QuantumDevice.SourceAlignedArtifacts`: schematic-graph and layout export helpers for the standardized build contract
 
 ## Architectural Direction
 

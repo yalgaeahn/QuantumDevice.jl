@@ -13,6 +13,7 @@ import DeviceLayout.SchematicDrivenLayout.ExamplePDK.SimpleJunctions: ExampleSim
 
 const ROOT = normpath(joinpath(@__DIR__, ".."))
 
+include("SourceAlignedArtifacts.jl")
 include("TrailBlazer.jl")
 
 end

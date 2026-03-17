@@ -4,19 +4,19 @@ const TRAILBLAZER_SOURCE_PATHS = joinpath(TRAILBLAZER_INPUT_DIR, "source_paths.j
 const TRAILBLAZER_NOTEBOOK_COPY = joinpath(TRAILBLAZER_INPUT_DIR, "source_notebook.ipynb")
 const TRAILBLAZER_REFERENCE_GDS_COPY = joinpath(TRAILBLAZER_INPUT_DIR, "reference_layout.gds")
 const TRAILBLAZER_FULLCHIP_BUILD_DIR = joinpath(ROOT, "build", "trailblazer-fullchip")
-const TRAILBLAZER_SLICE_BUILD_DIR = joinpath(ROOT, "build", "trailblazer-q1-purcell-slice")
-const TRAILBLAZER_SLICE_RESULTS_DIR = joinpath(ROOT, "results", "trailblazer-q1-purcell-slice")
+const TRAILBLAZER_Q1_SLICE_BUILD_DIR = joinpath(ROOT, "build", "trailblazer-q1-local-context")
+const TRAILBLAZER_Q1_SLICE_RESULTS_DIR = joinpath(ROOT, "results", "trailblazer-q1-local-context")
 
 export TrailBlazerConnectorSpec
 export TrailBlazerClawConnectorSpec
 export TrailBlazerTeeConnectorSpec
 export TrailBlazerQubitSpec
 export TrailBlazerRouteSpec
-export TrailBlazerPurcellSpec
 export TrailBlazerFullChipSpec
 export load_trailblazer_spec
 export build_fullchip
 export build_slice
+export derive_slice_membership
 export inspect_slice_solidmodel
 
 abstract type TrailBlazerConnectorSpec{T} end
@@ -106,6 +106,7 @@ end
 
 struct TrailBlazerRouteSpec{T}
     name::String
+    category::Symbol
     kind::Symbol
     start_component::String
     start_hook::Symbol
@@ -123,14 +124,6 @@ struct TrailBlazerRouteSpec{T}
     resolved_waypoints_um::Vector{NTuple{2, T}}
 end
 
-struct TrailBlazerPurcellSpec
-    launch_name::String
-    helper_launch_names::Vector{String}
-    capacitor_name::String
-    open_name::String
-    route_names::Vector{String}
-end
-
 struct TrailBlazerFullChipSpec{T}
     notebook_path::String
     reference_gds_path::String
@@ -144,7 +137,6 @@ struct TrailBlazerFullChipSpec{T}
     short_terminations::Vector{TrailBlazerShortTerminationSpec{T}}
     interdigital_caps::Vector{TrailBlazerInterdigitalCapSpec{T}}
     routes::Vector{TrailBlazerRouteSpec{T}}
-    purcell::TrailBlazerPurcellSpec
 end
 
 struct TrailBlazerPocketBody <: Component
@@ -209,6 +201,40 @@ struct TrailBlazerInterdigitalCap <: Component
     _geometry::CoordinateSystem
 end
 
+struct TrailBlazerPlacementFrame{T,H} <: AbstractComponent{T}
+    name::String
+    placement_hooks::H
+    _geometry::CoordinateSystem{T}
+end
+
+struct TrailBlazerResolvedRoute{T,S,M} <: AbstractComponent{T}
+    name::String
+    kind::Symbol
+    points::Vector{Point{T}}
+    p0_in_direction
+    p1_in_direction
+    style::S
+    meta::M
+    _geometry::CoordinateSystem{T}
+end
+
+struct TrailBlazerComponentPlacement
+    name::String
+    kind::Symbol
+    position_um::NTuple{2, Float64}
+    orientation_deg::Float64
+    component::AbstractComponent
+    hooks::Dict{Symbol, Hook}
+end
+
+struct TrailBlazerSchematicBuild{S}
+    graph::SchematicGraph
+    schematic::Schematic{S}
+    frame_node::ComponentNode
+    component_nodes::Dict{String, ComponentNode}
+    route_nodes::Dict{String, ComponentNode}
+end
+
 struct PlacedTrailBlazerComponent
     name::String
     kind::Symbol
@@ -224,6 +250,9 @@ struct TrailBlazerLayoutBuild
     placed::Dict{String, PlacedTrailBlazerComponent}
 end
 
+source_graph_hidden(::TrailBlazerPlacementFrame) = true
+source_graph_role(::TrailBlazerResolvedRoute) = :route
+
 tbcs(name::AbstractString) = CoordinateSystem(name, nm)
 umcoord(x::Real) = Float64(x) * 1.0μm
 umpt(x::Real, y::Real) = Point(umcoord(x), umcoord(y))
@@ -236,6 +265,14 @@ tbrect(x0, y0, x1, y1) = Rectangle(
 
 function vector_point(angle, length)
     return Point(length * cos(angle), length * sin(angle))
+end
+
+_origin_hook() = PointHook(0μm, 0μm, 180°)
+
+function _namedtuple_from_pairs(pairs::AbstractVector{<:Pair})
+    names = Tuple(first.(pairs))
+    values = Tuple(last.(pairs))
+    return NamedTuple{names}(values)
 end
 
 connector_name(spec::TrailBlazerConnectorSpec) = spec.name
@@ -415,14 +452,13 @@ end
 
 function SchematicDrivenLayout.hooks(body::TrailBlazerPocketBody)
     pairs = Pair{Symbol, Hook}[]
+    push!(pairs, :origin => _origin_hook())
     push!(pairs, :junction => PointHook(0μm, 0μm, 90°))
     for connector in body.connection_pads
         _, _, hook = _connector_geometry(connector, body)
         push!(pairs, connector_name(connector) => hook)
     end
-    names = Tuple(first.(pairs))
-    values = Tuple(last.(pairs))
-    return NamedTuple{names}(values)
+    return _namedtuple_from_pairs(pairs)
 end
 
 function SchematicDrivenLayout._geometry!(cs::CoordinateSystem, transmon::TrailBlazerPocketTransmon)
@@ -479,7 +515,7 @@ function SchematicDrivenLayout._geometry!(cs::CoordinateSystem, launch::TrailBla
 end
 
 function SchematicDrivenLayout.hooks(launch::TrailBlazerLaunchpad)
-    return (; tie = PointHook(Point(launch.lead_length, 0μm), 180°))
+    return (; origin = _origin_hook(), tie = PointHook(Point(launch.lead_length, 0μm), 180°))
 end
 
 function SchematicDrivenLayout._geometry!(cs::CoordinateSystem, term::TrailBlazerOpenTermination)
@@ -489,7 +525,7 @@ function SchematicDrivenLayout._geometry!(cs::CoordinateSystem, term::TrailBlaze
 end
 
 function SchematicDrivenLayout.hooks(term::TrailBlazerOpenTermination)
-    return (; open = PointHook(0μm, 0μm, 0°))
+    return (; origin = _origin_hook(), open = PointHook(0μm, 0μm, 0°))
 end
 
 function SchematicDrivenLayout._geometry!(cs::CoordinateSystem, term::TrailBlazerShortTermination)
@@ -497,7 +533,7 @@ function SchematicDrivenLayout._geometry!(cs::CoordinateSystem, term::TrailBlaze
 end
 
 function SchematicDrivenLayout.hooks(term::TrailBlazerShortTermination)
-    return (; short = PointHook(0μm, 0μm, 0°))
+    return (; origin = _origin_hook(), short = PointHook(0μm, 0μm, 0°))
 end
 
 function SchematicDrivenLayout._geometry!(cs::CoordinateSystem, cap::TrailBlazerInterdigitalCap)
@@ -547,11 +583,31 @@ end
 
 function SchematicDrivenLayout.hooks(cap::TrailBlazerInterdigitalCap)
     return (;
+        origin = _origin_hook(),
         north_end = PointHook(Point(0μm, cap.taper_length), -90°),
         south_end = PointHook(
             Point(0μm, -cap.taper_length - 2 * cap.cap_distance - (cap.cap_gap + 2 * cap.cap_width + cap.finger_length)),
             90°
         )
+    )
+end
+
+function SchematicDrivenLayout._geometry!(cs::CoordinateSystem, frame::TrailBlazerPlacementFrame)
+    return cs
+end
+
+SchematicDrivenLayout.hooks(frame::TrailBlazerPlacementFrame) = frame.placement_hooks
+
+function SchematicDrivenLayout._geometry!(cs::CoordinateSystem, route::TrailBlazerResolvedRoute)
+    _render_polyline_path!(cs, route.name, route.points, route.style, route.meta)
+    return cs
+end
+
+function SchematicDrivenLayout.hooks(route::TrailBlazerResolvedRoute)
+    return (
+        ;
+        p0 = PointHook(first(route.points), route.p0_in_direction),
+        p1 = PointHook(last(route.points), route.p1_in_direction),
     )
 end
 
@@ -687,6 +743,7 @@ function load_trailblazer_spec(path::AbstractString=TRAILBLAZER_SPEC_PATH)
             routes,
             TrailBlazerRouteSpec(
                 item["name"],
+                Symbol(item["category"]),
                 Symbol(item["kind"]),
                 item["start_component"],
                 Symbol(item["start_hook"]),
@@ -706,14 +763,6 @@ function load_trailblazer_spec(path::AbstractString=TRAILBLAZER_SPEC_PATH)
         )
     end
 
-    purcell = TrailBlazerPurcellSpec(
-        raw["purcell"]["launch_name"],
-        String.(raw["purcell"]["helper_launch_names"]),
-        raw["purcell"]["capacitor_name"],
-        raw["purcell"]["open_name"],
-        String.(raw["purcell"]["route_names"])
-    )
-
     return TrailBlazerFullChipSpec(
         raw["notebook_path"],
         raw["reference_gds_path"],
@@ -726,8 +775,7 @@ function load_trailblazer_spec(path::AbstractString=TRAILBLAZER_SPEC_PATH)
         opens,
         shorts,
         caps,
-        routes,
-        purcell
+        routes
     )
 end
 
@@ -750,6 +798,439 @@ function _component_kind(component::AbstractComponent)
     component isa TrailBlazerShortTermination && return :short_termination
     component isa TrailBlazerInterdigitalCap && return :interdigital_cap
     return :component
+end
+
+function _component_placement(component::AbstractComponent, pos_um::NTuple{2, Float64}, orientation_deg::Real)
+    transform = _transform_for_pos(pos_um, orientation_deg)
+    return TrailBlazerComponentPlacement(
+        name(component),
+        _component_kind(component),
+        (Float64(pos_um[1]), Float64(pos_um[2])),
+        Float64(orientation_deg),
+        component,
+        _global_hook_dict(component, transform)
+    )
+end
+
+function _component_catalog(spec::TrailBlazerFullChipSpec; component_filter=nothing, lumped_qubits=nothing)
+    include_all = isnothing(component_filter)
+    wanted = include_all ? Set{String}() : Set(String.(component_filter))
+    active_lumped_qubits =
+        isnothing(lumped_qubits) ? Set(qubit.name for qubit in spec.qubits) : Set(String.(lumped_qubits))
+    catalog = Dict{String, TrailBlazerComponentPlacement}()
+
+    for qubit in spec.qubits
+        include_all || (qubit.name in wanted) || continue
+        junction_mode = qubit.name in active_lumped_qubits ? :lumped : :metal
+        component = TrailBlazerPocketTransmon(qubit; junction_mode=junction_mode)
+        catalog[qubit.name] = _component_placement(component, qubit.pos_um, qubit.orientation_deg)
+    end
+    for launch in spec.launches
+        include_all || (launch.name in wanted) || continue
+        component = TrailBlazerLaunchpad(launch)
+        catalog[launch.name] = _component_placement(component, launch.pos_um, launch.orientation_deg)
+    end
+    for term in spec.open_terminations
+        include_all || (term.name in wanted) || continue
+        component = TrailBlazerOpenTermination(term)
+        catalog[term.name] = _component_placement(component, term.pos_um, term.orientation_deg)
+    end
+    for term in spec.short_terminations
+        include_all || (term.name in wanted) || continue
+        component = TrailBlazerShortTermination(term)
+        catalog[term.name] = _component_placement(component, term.pos_um, term.orientation_deg)
+    end
+    for cap in spec.interdigital_caps
+        include_all || (cap.name in wanted) || continue
+        component = TrailBlazerInterdigitalCap(cap)
+        catalog[cap.name] = _component_placement(component, cap.pos_um, cap.orientation_deg)
+    end
+
+    return catalog
+end
+
+function _placement_frame(name::AbstractString, catalog::Dict{String, TrailBlazerComponentPlacement})
+    pairs = Pair{Symbol, Hook}[]
+    for (component_name, placement) in sort(collect(catalog); by=first)
+        push!(
+            pairs,
+            Symbol(component_name) => PointHook(
+                umpt(placement.position_um[1], placement.position_um[2]),
+                placement.orientation_deg * 1.0°
+            )
+        )
+    end
+    return TrailBlazerPlacementFrame(
+        String(name),
+        _namedtuple_from_pairs(pairs),
+        CoordinateSystem{typeof(1.0μm)}(String(name))
+    )
+end
+
+function _filtered_route_specs(spec::TrailBlazerFullChipSpec; route_filter=nothing)
+    if isnothing(route_filter)
+        return spec.routes
+    end
+    wanted = Set(String.(route_filter))
+    return [route for route in spec.routes if route.name in wanted]
+end
+
+function _normalize_slice_target(target)
+    if target isa Symbol
+        target == :q1_purcell && return "Q_1"
+        target == Symbol("Q_1") && return "Q_1"
+        startswith(String(target), "Q_") && return String(target)
+    elseif target isa AbstractString
+        target == "q1_purcell" && return "Q_1"
+        startswith(target, "Q_") && return String(target)
+    end
+    error("Expected a target qubit like \"Q_1\"; got $(repr(target)).")
+end
+
+function _slice_shortname(target_qubit::AbstractString)
+    match = Base.match(r"^Q_(\d+)$", target_qubit)
+    isnothing(match) && error("Expected a target qubit like \"Q_1\"; got $(repr(target_qubit)).")
+    return "q" * only(match.captures)
+end
+
+_slice_output_name(target_qubit::AbstractString) = "trailblazer-" * _slice_shortname(target_qubit) * "-local-context"
+_slice_graph_name(target_qubit::AbstractString) = "trailblazer_" * _slice_shortname(target_qubit) * "_local_context"
+_slice_cell_name(target_qubit::AbstractString) = "trailblazer_" * _slice_shortname(target_qubit) * "_slice"
+_slice_live_name(target_qubit::AbstractString) = "trailblazer_" * _slice_shortname(target_qubit) * "_slice_live"
+_slice_build_dir(target_qubit::AbstractString) = joinpath(ROOT, "build", _slice_output_name(target_qubit))
+_slice_results_dir(target_qubit::AbstractString) = joinpath(ROOT, "results", _slice_output_name(target_qubit))
+
+function _qubit_names(spec::TrailBlazerFullChipSpec)
+    return Set(qubit.name for qubit in spec.qubits)
+end
+
+function _component_kind_map(spec::TrailBlazerFullChipSpec)
+    kinds = Dict{String, Symbol}()
+    for qubit in spec.qubits
+        kinds[qubit.name] = :qubit
+    end
+    for launch in spec.launches
+        kinds[launch.name] = :launch
+    end
+    for term in spec.open_terminations
+        kinds[term.name] = :open_termination
+    end
+    for term in spec.short_terminations
+        kinds[term.name] = :short_termination
+    end
+    for cap in spec.interdigital_caps
+        kinds[cap.name] = :interdigital_cap
+    end
+    return kinds
+end
+
+function _component_route_adjacency(spec::TrailBlazerFullChipSpec)
+    adjacency = Dict{String, Vector{TrailBlazerRouteSpec{Float64}}}()
+    for route in spec.routes
+        push!(get!(adjacency, route.start_component, TrailBlazerRouteSpec{Float64}[]), route)
+        push!(get!(adjacency, route.end_component, TrailBlazerRouteSpec{Float64}[]), route)
+    end
+    return adjacency
+end
+
+function _route_peer(route::TrailBlazerRouteSpec, component_name::AbstractString)
+    component_name == route.start_component && return route.end_component
+    component_name == route.end_component && return route.start_component
+    error("Route $(route.name) is not incident to component $(component_name).")
+end
+
+function _primary_readout_route(spec::TrailBlazerFullChipSpec, target_qubit::AbstractString)
+    for route in spec.routes
+        route.category == :readout || continue
+        (route.start_component == target_qubit || route.end_component == target_qubit) && return route
+    end
+    error("No readout route found for $(target_qubit).")
+end
+
+function derive_slice_membership(
+    spec::TrailBlazerFullChipSpec,
+    target;
+    include_bus_neighbors::Bool=true,
+    include_readout::Bool=true,
+    include_control::Bool=false,
+    include_purcell_if_connected::Bool=true
+)
+    target_qubit = _normalize_slice_target(target)
+    target_qubit in _qubit_names(spec) || error("Unknown TrailBlazer target qubit $(repr(target_qubit)).")
+
+    adjacency = _component_route_adjacency(spec)
+    component_names = Set([target_qubit])
+    route_names = Set{String}()
+
+    for route in get(adjacency, target_qubit, TrailBlazerRouteSpec{Float64}[])
+        if route.category == :readout && include_readout
+            push!(route_names, route.name)
+            push!(component_names, _route_peer(route, target_qubit))
+        elseif route.category == :bus && include_bus_neighbors
+            push!(route_names, route.name)
+            push!(component_names, _route_peer(route, target_qubit))
+        elseif route.category == :control && include_control
+            push!(route_names, route.name)
+            push!(component_names, _route_peer(route, target_qubit))
+        end
+    end
+
+    if include_purcell_if_connected
+        changed = true
+        while changed
+            changed = false
+            for route in spec.routes
+                route.category == :purcell || continue
+                route.name in route_names && continue
+                if route.start_component in component_names || route.end_component in component_names
+                    push!(route_names, route.name)
+                    push!(component_names, route.start_component)
+                    push!(component_names, route.end_component)
+                    changed = true
+                end
+            end
+        end
+    end
+
+    kind_map = _component_kind_map(spec)
+    degree = Dict(name => 0 for name in component_names)
+    for route in spec.routes
+        route.name in route_names || continue
+        degree[route.start_component] = get(degree, route.start_component, 0) + 1
+        degree[route.end_component] = get(degree, route.end_component, 0) + 1
+    end
+
+    primary_readout_route = _primary_readout_route(spec, target_qubit)
+    primary_readout_component = _route_peer(primary_readout_route, target_qubit)
+    external_port_components = String[]
+    if primary_readout_component in component_names
+        push!(external_port_components, primary_readout_component)
+    end
+    additional = sort([
+        name for name in component_names
+        if name != primary_readout_component &&
+            get(kind_map, name, :component) in (:launch, :open_termination, :short_termination) &&
+            get(degree, name, 0) == 1
+    ])
+    append!(external_port_components, additional)
+
+    return (
+        target_qubit=target_qubit,
+        context=:local_bus,
+        component_names=sort!(collect(component_names)),
+        route_names=sort!(collect(route_names)),
+        external_port_components=external_port_components
+    )
+end
+
+function _global_route_points(route::TrailBlazerRouteSpec, start_hook::Hook, end_hook::Hook)
+    resolved_points = _resolved_route_points(route, start_hook, end_hook)
+    if !isnothing(resolved_points)
+        return resolved_points
+    end
+
+    start_anchor, waypoints = _route_waypoints(route, start_hook, end_hook)
+    points = Point[start_hook.p]
+    !_same_point(start_anchor, start_hook.p) && push!(points, start_anchor)
+    append!(points, waypoints)
+    !_same_point(points[end], end_hook.p) && push!(points, end_hook.p)
+    return points
+end
+
+function _global_route_waypoints(route::TrailBlazerRouteSpec, start_hook::Hook, end_hook::Hook)
+    if !isempty(route.resolved_waypoints_um)
+        return [umpt(x, y) for (x, y) in route.resolved_waypoints_um]
+    end
+    points = _global_route_points(route, start_hook, end_hook)
+    length(points) <= 2 && return Point{typeof(start_hook.p.x)}[]
+    return collect(points[2:(end - 1)])
+end
+
+function _route_rule(route::TrailBlazerRouteSpec)
+    return Paths.StraightAnd90(_bend_radius(route))
+end
+
+function _route_prefix_state(route::TrailBlazerRouteSpec, start_hook::Hook, end_hook::Hook)
+    start_anchor = route.lead_start_straight_um > 0 ? _lead_anchor(start_hook, route.lead_start_straight_um, true) : start_hook.p
+    start_direction = out_direction(start_hook)
+    jog_points, jog_direction = _jog_waypoints(start_anchor, start_direction, route.start_jogs)
+    end_anchor = route.lead_end_straight_um > 0 ? _lead_anchor(end_hook, route.lead_end_straight_um, false) : end_hook.p
+    meander_start = isempty(jog_points) ? start_anchor : last(jog_points)
+    return start_anchor, jog_points, jog_direction, meander_start, end_anchor
+end
+
+function _meander_segment_count(start_point::Point, end_point::Point, route::TrailBlazerRouteSpec)
+    spacing_um = isnothing(route.meander_spacing_um) ? 200.0 : route.meander_spacing_um
+    spacing = max(umcoord(spacing_um), 1.0μm)
+    direct = max(abs(end_point.x - start_point.x), abs(end_point.y - start_point.y))
+    return max(1, Int(floor(Float64(direct / spacing) / 2)))
+end
+
+function _meander_offset(route::TrailBlazerRouteSpec)
+    isnothing(route.meander_asymmetry_um) && return 0.0
+    total = isnothing(route.total_length_um) ? 1.0 : max(route.total_length_um, 1.0)
+    return clamp(route.meander_asymmetry_um / total, -0.45, 0.45)
+end
+
+function _orthogonal_meander_points(start_point::Point, end_point::Point, route::TrailBlazerRouteSpec)
+    spacing_um = isnothing(route.meander_spacing_um) ? 200.0 : route.meander_spacing_um
+    spacing = max(umcoord(spacing_um), 1.0μm)
+    dx = end_point.x - start_point.x
+    dy = end_point.y - start_point.y
+    horizontal = abs(dx) >= abs(dy)
+    primary = horizontal ? abs(dx) : abs(dy)
+    secondary = horizontal ? abs(dy) : abs(dx)
+    count = max(2, Int(floor(Float64(primary / spacing))))
+    total_length = isnothing(route.total_length_um) ? (primary + secondary) : umcoord(route.total_length_um)
+    available_extra = max(total_length - primary - secondary, zero(primary))
+    base_amplitude = max(spacing / 2, available_extra / (2 * max(count - 1, 1)))
+    asymmetry = isnothing(route.meander_asymmetry_um) ? zero(base_amplitude) : abs(umcoord(route.meander_asymmetry_um)) / 2
+    positive_amplitude = base_amplitude + asymmetry
+    negative_amplitude = max(spacing / 2, base_amplitude - asymmetry)
+
+    points = Point[start_point]
+    current = start_point
+    if horizontal
+        sign_secondary = dy >= zero(dy) ? 1 : -1
+        for idx in 1:(count - 1)
+            x = start_point.x + dx * idx / count
+            base_y = start_point.y + dy * idx / count
+            amplitude = isodd(idx) ? positive_amplitude : -negative_amplitude
+            target_y = base_y + sign_secondary * amplitude
+            corner1 = Point(x, current.y)
+            !_same_point(corner1, current) && push!(points, corner1)
+            current = points[end]
+            corner2 = Point(x, target_y)
+            !_same_point(corner2, current) && push!(points, corner2)
+            current = points[end]
+        end
+        corner = Point(end_point.x, current.y)
+        !_same_point(corner, current) && push!(points, corner)
+    else
+        sign_secondary = dx >= zero(dx) ? 1 : -1
+        for idx in 1:(count - 1)
+            y = start_point.y + dy * idx / count
+            base_x = start_point.x + dx * idx / count
+            amplitude = isodd(idx) ? positive_amplitude : -negative_amplitude
+            target_x = base_x + sign_secondary * amplitude
+            corner1 = Point(current.x, y)
+            !_same_point(corner1, current) && push!(points, corner1)
+            current = points[end]
+            corner2 = Point(target_x, y)
+            !_same_point(corner2, current) && push!(points, corner2)
+            current = points[end]
+        end
+        corner = Point(current.x, end_point.y)
+        !_same_point(corner, current) && push!(points, corner)
+    end
+    !_same_point(points[end], end_point) && push!(points, end_point)
+    return points
+end
+
+function _assemble_trailblazer_graph!(
+    g::SchematicGraph,
+    spec::TrailBlazerFullChipSpec;
+    component_filter=nothing,
+    route_filter=nothing,
+    lumped_qubits=nothing
+)
+    catalog = _component_catalog(spec; component_filter=component_filter, lumped_qubits=lumped_qubits)
+    frame = _placement_frame(name(g) * "_placement", catalog)
+    frame_node = add_node!(g, frame; base_id=frame.name)
+
+    component_nodes = Dict{String, ComponentNode}()
+    for (component_name, placement) in sort(collect(catalog); by=first)
+        node = add_node!(g, placement.component; base_id=component_name)
+        component_nodes[component_name] = node
+        fuse!(g, frame_node => Symbol(component_name), node => :origin)
+    end
+
+    route_nodes = Dict{String, ComponentNode}()
+    for route in _filtered_route_specs(spec; route_filter=route_filter)
+        haskey(component_nodes, route.start_component) || continue
+        haskey(component_nodes, route.end_component) || continue
+        start_hook = catalog[route.start_component].hooks[route.start_hook]
+        end_hook = catalog[route.end_component].hooks[route.end_hook]
+        route_node = route!(
+            g,
+            _route_rule(route),
+            component_nodes[route.start_component] => route.start_hook,
+            component_nodes[route.end_component] => route.end_hook,
+            _style(route),
+            LayerVocabulary.METAL_NEGATIVE;
+            name=route.name,
+            waypoints=_global_route_waypoints(route, start_hook, end_hook),
+            global_waypoints=true,
+            route_kind=String(route.kind),
+            route_category=String(route.category),
+            fillet_um=Float64(route.fillet_um),
+            resolved_waypoint_count=length(route.resolved_waypoints_um)
+        )
+        route_component = component(route_node)
+        route_path = _route_component_path(route, start_hook, end_hook)
+        !isnothing(route_path) && (route_component._path = route_path)
+        route_nodes[route.name] = route_node
+    end
+
+    return (; frame_node, component_nodes, route_nodes)
+end
+
+function _plan_trailblazer_schematic(
+    spec::TrailBlazerFullChipSpec;
+    graph_name::AbstractString,
+    log_dir::AbstractString,
+    component_filter=nothing,
+    route_filter=nothing,
+    lumped_qubits=nothing
+)
+    reset_uniquename!()
+    graph = SchematicGraph(String(graph_name))
+    assembled = _assemble_trailblazer_graph!(
+        graph,
+        spec;
+        component_filter=component_filter,
+        route_filter=route_filter,
+        lumped_qubits=lumped_qubits
+    )
+    schematic = plan(graph; log_dir=log_dir)
+    check!(schematic)
+    return TrailBlazerSchematicBuild(
+        graph,
+        schematic,
+        assembled.frame_node,
+        assembled.component_nodes,
+        assembled.route_nodes
+    )
+end
+
+function _schematic_component_hooks(build::TrailBlazerSchematicBuild)
+    out = Dict{String, Dict{Symbol, Hook}}()
+    for (component_name, node) in sort(collect(build.component_nodes); by=first)
+        hook_dict = Dict{Symbol, Hook}()
+        for (hook_name, hook) in pairs(hooks(build.schematic, node))
+            hook_dict[hook_name] = hook
+        end
+        out[component_name] = hook_dict
+    end
+    return out
+end
+
+function _serialize_schematic_hooks(path::AbstractString, build::TrailBlazerSchematicBuild)
+    data = Dict{String, Any}()
+    for (component_name, hook_dict) in _schematic_component_hooks(build)
+        hooks_out = Dict{String, Any}()
+        for (hook_name, hook) in hook_dict
+            hooks_out[String(hook_name)] = Dict(
+                "point_um" => [_μm_value(hook.p.x), _μm_value(hook.p.y)],
+                "in_direction_deg" => Float64(in_direction(hook) / 1.0°)
+            )
+        end
+        data[component_name] = hooks_out
+    end
+    open(path, "w") do io
+        JSON.print(io, data, 2)
+        write(io, '\n')
+    end
 end
 
 function _place_component!(cs::CoordinateSystem, component::AbstractComponent, pos_um, orientation_deg)
@@ -941,34 +1422,131 @@ function _route_points(route::TrailBlazerRouteSpec, placed::Dict{String, PlacedT
     return points
 end
 
-function _render_polyline_path!(cs, path_name::AbstractString, points::AbstractVector{<:Point}, style, meta)
+function _filtered_points(points::AbstractVector{<:Point})
     filtered = Point[]
     for point in points
         isempty(filtered) || _same_point(filtered[end], point) || push!(filtered, point)
         isempty(filtered) && push!(filtered, point)
     end
-    length(filtered) < 2 && return
+    return filtered
+end
 
-    α0 = _segment_angle(filtered[1], filtered[2])
-    path = Path(filtered[1]; α0=α0, name=path_name, metadata=meta)
-    straight!(path, _segment_length(filtered[1], filtered[2]), style)
+function _sanitize_polyline_points(points::Vector{<:Point}, bend_radius)
+    length(points) <= 2 && return points
+    filtered = copy(points)
+    changed = true
+    while changed && length(filtered) > 2
+        changed = false
+        for idx in 2:(length(filtered) - 1)
+            prev = filtered[idx - 1]
+            curr = filtered[idx]
+            nxt = filtered[idx + 1]
+            len_prev = _segment_length(prev, curr)
+            len_next = _segment_length(curr, nxt)
+            dα = abs(Float64(_normalized_turn(_segment_angle(curr, nxt), _segment_angle(prev, curr)) / 1.0°))
+            is_short = min(len_prev, len_next) < bend_radius
+            is_near_uturn = dα > 165.0
+            if is_short && is_near_uturn
+                deleteat!(filtered, idx)
+                changed = true
+                break
+            end
+        end
+    end
+    return filtered
+end
 
-    for idx in 2:(length(filtered) - 1)
-        prev = filtered[idx - 1]
-        curr = filtered[idx]
-        nxt = filtered[idx + 1]
-        α_prev = _segment_angle(prev, curr)
-        α_next = _segment_angle(curr, nxt)
-        dα = _normalized_turn(α_next, α_prev)
-        !iszero(dα) && turn!(path, dα, zero(_segment_length(curr, nxt)), style)
-        straight!(path, _segment_length(curr, nxt), style)
+function _polyline_path(path_name::AbstractString, points::AbstractVector{<:Point}, style, meta; bend_radius=0.0μm)
+    filtered = _sanitize_polyline_points(_filtered_points(points), bend_radius)
+    length(filtered) < 2 && return nothing
+
+    segment_directions = [_segment_angle(filtered[idx], filtered[idx + 1]) for idx in 1:(length(filtered) - 1)]
+    segment_lengths = [_segment_length(filtered[idx], filtered[idx + 1]) for idx in 1:(length(filtered) - 1)]
+    path = Path(filtered[1]; α0=segment_directions[1], name=path_name, metadata=meta)
+
+    if length(filtered) == 2
+        straight!(path, segment_lengths[1], style)
+        return path
     end
 
+    n_corners = length(filtered) - 2
+    trims = [zero(segment_lengths[1]) for _ in 1:n_corners]
+    turn_angles = fill(0.0°, n_corners)
+    tan_halves = zeros(Float64, n_corners)
+
+    for corner_idx in 1:n_corners
+        dα = _normalized_turn(segment_directions[corner_idx + 1], segment_directions[corner_idx])
+        turn_angles[corner_idx] = dα
+        abs(Float64(dα / 1.0°)) <= 1.0e-6 && continue
+        tan_half = abs(tan(Float64(dα / 1.0°) * pi / 360.0))
+        tan_half <= 1.0e-12 && continue
+        tan_halves[corner_idx] = tan_half
+        trims[corner_idx] = bend_radius * tan_half
+    end
+
+    scale_factors = ones(Float64, n_corners)
+    for seg_idx in 1:length(segment_lengths)
+        left_corner = seg_idx - 1
+        right_corner = seg_idx
+        trim_total = zero(segment_lengths[seg_idx])
+        if left_corner >= 1
+            trim_total += trims[left_corner]
+        end
+        if right_corner <= n_corners
+            trim_total += trims[right_corner]
+        end
+        trim_total > segment_lengths[seg_idx] || continue
+        scale = Float64((0.98 * segment_lengths[seg_idx]) / trim_total)
+        left_corner >= 1 && (scale_factors[left_corner] = min(scale_factors[left_corner], scale))
+        right_corner <= n_corners && (scale_factors[right_corner] = min(scale_factors[right_corner], scale))
+    end
+    for corner_idx in 1:n_corners
+        trims[corner_idx] *= scale_factors[corner_idx]
+    end
+
+    for seg_idx in 1:length(segment_lengths)
+        trim_start = seg_idx > 1 ? trims[seg_idx - 1] : zero(segment_lengths[seg_idx])
+        trim_end = seg_idx <= n_corners ? trims[seg_idx] : zero(segment_lengths[seg_idx])
+        straight_length = segment_lengths[seg_idx] - trim_start - trim_end
+        straight_length > 1.0e-9 * oneunit(straight_length) && straight!(path, straight_length, style)
+        if seg_idx <= n_corners && tan_halves[seg_idx] > 1.0e-12 && trims[seg_idx] > zero(trims[seg_idx])
+            turn_radius = trims[seg_idx] / tan_halves[seg_idx]
+            turn!(path, turn_angles[seg_idx], turn_radius, style)
+        end
+    end
+    return path
+end
+
+function _render_polyline_path!(cs, path_name::AbstractString, points::AbstractVector{<:Point}, style, meta; bend_radius=0.0μm)
+    path = _polyline_path(path_name, points, style, meta; bend_radius=bend_radius)
+    isnothing(path) && return
     render!(cs, path)
 end
 
 function _render_polyline_route!(cs::CoordinateSystem, route::TrailBlazerRouteSpec, style, points::AbstractVector{<:Point})
-    return _render_polyline_path!(cs, route.name, points, style, LayerVocabulary.METAL_NEGATIVE)
+    return _render_polyline_path!(cs, route.name, points, style, LayerVocabulary.METAL_NEGATIVE; bend_radius=_bend_radius(route))
+end
+
+function _route_component_path(route::TrailBlazerRouteSpec, start_hook::Hook, end_hook::Hook)
+    if route.kind == :meander && !isnothing(route.total_length_um)
+        bend_radius = _bend_radius(route)
+        start_anchor, jog_points, _, meander_start, end_anchor = _route_prefix_state(route, start_hook, end_hook)
+        points = Point[start_hook.p]
+        !_same_point(start_anchor, start_hook.p) && push!(points, start_anchor)
+        append!(points, jog_points)
+        meander_points = _orthogonal_meander_points(meander_start, end_anchor, route)
+        append!(points, meander_points[2:end])
+        !_same_point(points[end], end_hook.p) && push!(points, end_hook.p)
+        return _polyline_path(route.name, points, _style(route), LayerVocabulary.METAL_NEGATIVE; bend_radius=bend_radius)
+    end
+
+    return _polyline_path(
+        route.name,
+        _global_route_points(route, start_hook, end_hook),
+        _style(route),
+        LayerVocabulary.METAL_NEGATIVE;
+        bend_radius=_bend_radius(route)
+    )
 end
 
 function _render_route!(cs::CoordinateSystem, route::TrailBlazerRouteSpec, placed::Dict{String, PlacedTrailBlazerComponent})
@@ -1020,12 +1598,11 @@ function _serialize_hooks(path::AbstractString, placed::Dict{String, PlacedTrail
     end
 end
 
-function _trailblazer_map_meta(meta)
+function _trailblazer_qiskit_gds_meta(meta)
     meta isa GDSMeta && return meta
     meta == LayerVocabulary.METAL_POSITIVE && return GDSMeta(1, 10)
     meta == LayerVocabulary.METAL_NEGATIVE && return GDSMeta(1, 100)
     meta == LayerVocabulary.JUNCTION_PATTERN && return GDSMeta(1, 10)
-    meta == LayerVocabulary.PORT && return GDSMeta(1, 10)
     return nothing
 end
 
@@ -1037,47 +1614,6 @@ function _trailblazer_graphics_meta(meta)
     meta == LayerVocabulary.JUNCTION_PATTERN && return GDSMeta(13, 0)
     meta == LayerVocabulary.SIMULATED_AREA && return GDSMeta(14, 0)
     meta == LayerVocabulary.CHIP_AREA && return GDSMeta(15, 0)
-    meta == LayerVocabulary.WRITEABLE_AREA && return nothing
-    return nothing
-end
-
-const TRAILBLAZER_COMPONENT_ROLE_LAYERS = Dict(
-    :qubit => 20,
-    :launch => 21,
-    :open_termination => 22,
-    :short_termination => 23,
-    :interdigital_cap => 24,
-    :component => 25,
-)
-
-const TRAILBLAZER_ROUTE_ROLE_LAYERS = Dict(
-    :bus => 30,
-    :readout => 31,
-    :control => 32,
-    :purcell => 33,
-)
-
-const TRAILBLAZER_INSPECTION_BASE_LAYERS = Dict(
-    :metal => 50,
-    :etch => 51,
-    :port => 52,
-    :simulated_area => 53,
-    :chip_area => 54,
-    :label => 60,
-)
-
-function _trailblazer_inspection_base_meta(meta)
-    meta isa GDSMeta && return meta
-    (meta == LayerVocabulary.METAL_POSITIVE || meta == LayerVocabulary.JUNCTION_PATTERN) &&
-        return GDSMeta(TRAILBLAZER_INSPECTION_BASE_LAYERS[:metal], 0)
-    meta == LayerVocabulary.METAL_NEGATIVE &&
-        return GDSMeta(TRAILBLAZER_INSPECTION_BASE_LAYERS[:etch], 0)
-    meta == LayerVocabulary.PORT &&
-        return GDSMeta(TRAILBLAZER_INSPECTION_BASE_LAYERS[:port], 0)
-    meta == LayerVocabulary.SIMULATED_AREA &&
-        return GDSMeta(TRAILBLAZER_INSPECTION_BASE_LAYERS[:simulated_area], 0)
-    meta == LayerVocabulary.CHIP_AREA &&
-        return GDSMeta(TRAILBLAZER_INSPECTION_BASE_LAYERS[:chip_area], 0)
     meta == LayerVocabulary.WRITEABLE_AREA && return nothing
     return nothing
 end
@@ -1112,86 +1648,60 @@ function _trailblazer_layout_graphics_options(; fullchip::Bool=false)
         (; width=1600, height=1100, layercolors)
 end
 
-function _trailblazer_layout_cell(name::AbstractString, cs::CoordinateSystem; graphics::Bool=false)
+function _trailblazer_chip_geometry(spec::TrailBlazerFullChipSpec)
+    return centered(
+        Rectangle(umcoord(spec.chip_size_um[1]), umcoord(spec.chip_size_um[2])),
+        on_pt=umpt(spec.chip_center_um[1], spec.chip_center_um[2])
+    )
+end
+
+function _trailblazer_layout_cell(name::AbstractString, schematic::Schematic; graphics::Bool=false)
+    build!(schematic)
     cell = Cell(name, nm)
-    render!(cell, cs; map_meta=graphics ? _trailblazer_graphics_meta : _trailblazer_map_meta)
+    render!(
+        cell,
+        schematic.coordinate_system;
+        map_meta=graphics ? _trailblazer_graphics_meta : _trailblazer_map_meta
+    )
+    flatten!(cell)
     return cell
 end
 
-function _write_graphics_bundle(output_dir::AbstractString, basename::AbstractString, cell::Cell; fullchip::Bool=false, include_pdf::Bool=true)
-    options = _trailblazer_layout_graphics_options(; fullchip=fullchip)
-    svg_path = joinpath(output_dir, basename * ".svg")
-    png_path = joinpath(output_dir, basename * ".png")
-    pdf_path = include_pdf ? joinpath(output_dir, basename * ".pdf") : nothing
-
-    save(svg_path, cell; options...)
-    save(png_path, cell; options...)
-    !isnothing(pdf_path) && save(pdf_path, cell; options...)
-    return (; svg_path, png_path, pdf_path)
+function _trailblazer_qiskit_gds_cell(
+    name::AbstractString,
+    schematic::Schematic,
+    spec::TrailBlazerFullChipSpec;
+    fullchip::Bool=false
+)
+    build!(schematic)
+    cell = Cell(name, nm)
+    render!(cell, schematic.coordinate_system; map_meta=_trailblazer_qiskit_gds_meta)
+    fullchip && render!(cell, _trailblazer_chip_geometry(spec), GDSMeta(1, 100))
+    flatten!(cell)
+    return cell
 end
 
-function _write_layout_graphics(output_dir::AbstractString, cell::Cell; fullchip::Bool=false, include_pdf::Bool=true)
-    return _write_graphics_bundle(output_dir, "layout", cell; fullchip=fullchip, include_pdf=include_pdf)
+function _route_min_bend_radius_um(rule)
+    hasproperty(rule, :min_bend_radius) || return nothing
+    return _μm_value(getproperty(rule, :min_bend_radius))
 end
 
-function _write_trailblazer_layout_outputs(output_dir::AbstractString, cs::CoordinateSystem, cell_name::AbstractString; save_layout_graphics::Bool=true, fullchip::Bool=false)
-    gds_path = joinpath(output_dir, "device.gds")
-    save(gds_path, _trailblazer_layout_cell(cell_name, cs))
-
-    if !save_layout_graphics
-        return (; gds_path, layout_svg_path=nothing, layout_png_path=nothing, layout_pdf_path=nothing)
-    end
-
-    graphics_paths = _write_layout_graphics(
-        output_dir,
-        _trailblazer_layout_cell(cell_name * "_layout", cs; graphics=true);
-        fullchip=fullchip
-    )
-    return (;
-        gds_path,
-        layout_svg_path=graphics_paths.svg_path,
-        layout_png_path=graphics_paths.png_path,
-        layout_pdf_path=graphics_paths.pdf_path
-    )
-end
-
-function _component_visual_bounds(pc::PlacedTrailBlazerComponent)
-    bbox = try
-        bounds(pc.reference)
-    catch
-        nothing
-    end
-
-    if isnothing(bbox)
-        pts = [hook.p for hook in values(pc.hooks)]
-        center_pt = isempty(pts) ? umpt(pc.position_um[1], pc.position_um[2]) : Point(
-            sum(point.x for point in pts) / length(pts),
-            sum(point.y for point in pts) / length(pts)
-        )
-        return centered(Rectangle(140μm, 140μm), on_pt=center_pt)
-    end
-
-    cx = (bbox.ll.x + bbox.ur.x) / 2
-    cy = (bbox.ll.y + bbox.ur.y) / 2
-    halfw = max((bbox.ur.x - bbox.ll.x) / 2 + 25μm, 55μm)
-    halfh = max((bbox.ur.y - bbox.ll.y) / 2 + 25μm, 55μm)
-    return Rectangle(Point(cx - halfw, cy - halfh), Point(cx + halfw, cy + halfh))
-end
-
-function _write_placement_registry(path::AbstractString, placed::Dict{String, PlacedTrailBlazerComponent})
+function _serialize_route_registry(path::AbstractString, build::TrailBlazerSchematicBuild, spec::TrailBlazerFullChipSpec)
+    spec_routes = Dict(route.name => route for route in spec.routes)
     data = Dict{String, Any}()
-    for (name, pc) in sort(collect(placed); by=first)
-        bbox = _component_visual_bounds(pc)
-        center_pt = DeviceLayout.center(bbox)
-        data[name] = Dict(
-            "kind" => String(pc.kind),
-            "position_um" => [pc.position_um[1], pc.position_um[2]],
-            "orientation_deg" => pc.orientation_deg,
-            "center_um" => [μm_number(center_pt.x), μm_number(center_pt.y)],
-            "bounds_um" => Dict(
-                "ll" => [μm_number(bbox.ll.x), μm_number(bbox.ll.y)],
-                "ur" => [μm_number(bbox.ur.x), μm_number(bbox.ur.y)]
-            )
+    for (route_name, node) in sort(collect(build.route_nodes); by=first)
+        route_component = component(node)
+        spec_route = spec_routes[route_name]
+        data[route_name] = Dict(
+            "component_type" => string(typeof(route_component)),
+            "rule_type" => string(typeof(route_component.r.rule)),
+            "route_kind" => String(spec_route.kind),
+            "route_category" => String(spec_route.category),
+            "global_waypoints" => route_component.global_waypoints,
+            "global_waypoint_count" => length(route_component.r.waypoints),
+            "global_waypoints_um" => [[_μm_value(point.x), _μm_value(point.y)] for point in route_component.r.waypoints],
+            "resolved_waypoint_count" => length(spec_route.resolved_waypoints_um),
+            "min_bend_radius_um" => _route_min_bend_radius_um(route_component.r.rule),
         )
     end
     open(path, "w") do io
@@ -1200,128 +1710,32 @@ function _write_placement_registry(path::AbstractString, placed::Dict{String, Pl
     end
 end
 
-function _write_connectivity_registry(path::AbstractString, spec::TrailBlazerFullChipSpec, placed::Dict{String, PlacedTrailBlazerComponent}; route_filter=nothing)
-    include_all = isnothing(route_filter)
-    wanted = include_all ? Set{String}() : Set(String.(route_filter))
-    routes_out = Any[]
+function _write_trailblazer_contract_outputs(
+    output_dir::AbstractString,
+    schematic::Schematic,
+    spec::TrailBlazerFullChipSpec,
+    cell_name::AbstractString;
+    save_layout_graphics::Bool=true,
+    fullchip::Bool=false
+)
+    graph_svg_path = joinpath(output_dir, "schematic_graph.svg")
+    write_schematic_graph_svg(graph_svg_path, schematic)
 
-    for route in spec.routes
-        include_all || (route.name in wanted) || continue
-        points = _route_points(route, placed)
-        isempty(points) && continue
-        path_length_um = 0.0
-        for idx in 1:(length(points) - 1)
-            path_length_um += Float64(_segment_length(points[idx], points[idx + 1]) / 1.0μm)
-        end
-        push!(routes_out, Dict(
-            "name" => route.name,
-            "kind" => String(route.kind),
-            "start_component" => route.start_component,
-            "start_hook" => String(route.start_hook),
-            "end_component" => route.end_component,
-            "end_hook" => String(route.end_hook),
-            "path_length_um" => path_length_um,
-            "points_um" => [[Float64(point.x / 1.0μm), Float64(point.y / 1.0μm)] for point in points]
-        ))
-    end
+    gds_path = joinpath(output_dir, "device.gds")
+    save(gds_path, _trailblazer_qiskit_gds_cell(cell_name, schematic, spec; fullchip=fullchip); userunit=1.0mm)
 
-    open(path, "w") do io
-        JSON.print(io, routes_out, 2)
-        write(io, '\n')
-    end
-end
-
-function _legend_items()
-    return [
-        ("qubit", TRAILBLAZER_COMPONENT_ROLE_LAYERS[:qubit]),
-        ("launch", TRAILBLAZER_COMPONENT_ROLE_LAYERS[:launch]),
-        ("open term", TRAILBLAZER_COMPONENT_ROLE_LAYERS[:open_termination]),
-        ("short term", TRAILBLAZER_COMPONENT_ROLE_LAYERS[:short_termination]),
-        ("IDC", TRAILBLAZER_COMPONENT_ROLE_LAYERS[:interdigital_cap]),
-        ("bus route", TRAILBLAZER_ROUTE_ROLE_LAYERS[:bus]),
-        ("readout route", TRAILBLAZER_ROUTE_ROLE_LAYERS[:readout]),
-        ("control route", TRAILBLAZER_ROUTE_ROLE_LAYERS[:control]),
-        ("Purcell route", TRAILBLAZER_ROUTE_ROLE_LAYERS[:purcell]),
-    ]
-end
-
-function _add_inspection_legend!(cell::Cell, frame_bounds::Rectangle)
-    base_x = frame_bounds.ll.x + 70μm
-    base_y = frame_bounds.ur.y - 70μm
-    text!(
-        cell,
-        "TrailBlazer placement review",
-        Point(base_x, base_y),
-        GDSMeta(TRAILBLAZER_INSPECTION_BASE_LAYERS[:label], 0);
-        mag=1.2
-    )
-
-    row_y = base_y - 75μm
-    for (label, layer) in _legend_items()
-        render!(cell, Rectangle(Point(base_x, row_y - 14μm), Point(base_x + 26μm, row_y + 12μm)), GDSMeta(layer, 0))
-        text!(
-            cell,
-            label,
-            Point(base_x + 40μm, row_y + 8μm),
-            GDSMeta(TRAILBLAZER_INSPECTION_BASE_LAYERS[:label], 0);
-            mag=1.0
-        )
-        row_y -= 42μm
-    end
-end
-
-function _inspection_cell(cell_name::AbstractString, layout::TrailBlazerLayoutBuild, spec::TrailBlazerFullChipSpec; route_filter=nothing)
-    cell = Cell(cell_name, nm)
-    render!(cell, layout.coordinate_system; map_meta=_trailblazer_inspection_base_meta)
-
-    include_all = isnothing(route_filter)
-    wanted = include_all ? Set{String}() : Set(String.(route_filter))
-    for route in spec.routes
-        include_all || (route.name in wanted) || continue
-        points = _route_points(route, layout.placed)
-        isempty(points) && continue
-        layer = get(TRAILBLAZER_ROUTE_ROLE_LAYERS, route.kind, TRAILBLAZER_ROUTE_ROLE_LAYERS[:control])
-        style = Paths.Trace(max(umcoord(route.trace_width_um), 10μm))
-        _render_polyline_path!(cell, route.name * "_inspect", points, style, GDSMeta(layer, 0))
-    end
-
-    for (_, pc) in sort(collect(layout.placed); by=first)
-        bbox = _component_visual_bounds(pc)
-        layer = get(TRAILBLAZER_COMPONENT_ROLE_LAYERS, pc.kind, TRAILBLAZER_COMPONENT_ROLE_LAYERS[:component])
-        render!(cell, bbox, GDSMeta(layer, 0))
-        text!(
-            cell,
-            pc.name,
-            Point(bbox.ll.x, bbox.ur.y + 18μm),
-            GDSMeta(TRAILBLAZER_INSPECTION_BASE_LAYERS[:label], 0);
-            mag=0.95
+    layout_svg_path = nothing
+    if save_layout_graphics
+        graphics_cell = _trailblazer_layout_cell(cell_name * "_layout", schematic; graphics=true)
+        layout_svg_path = joinpath(output_dir, "layout.svg")
+        write_layout_svg(
+            layout_svg_path,
+            graphics_cell;
+            options=_trailblazer_layout_graphics_options(; fullchip=fullchip)
         )
     end
 
-    _add_inspection_legend!(cell, bounds(cell))
-    return cell
-end
-
-function _write_trailblazer_inspection_outputs(output_dir::AbstractString, layout::TrailBlazerLayoutBuild, spec::TrailBlazerFullChipSpec; route_filter=nothing, fullchip::Bool=false)
-    placement_registry_path = joinpath(output_dir, "placement_registry.json")
-    connectivity_path = joinpath(output_dir, "connectivity.json")
-    _write_placement_registry(placement_registry_path, layout.placed)
-    _write_connectivity_registry(connectivity_path, spec, layout.placed; route_filter=route_filter)
-
-    cell = _inspection_cell(
-        fullchip ? "trailblazer_fullchip_inspection" : "trailblazer_q1_slice_inspection",
-        layout,
-        spec;
-        route_filter=route_filter
-    )
-    graphics_paths = _write_graphics_bundle(output_dir, "placement_graph", cell; fullchip=fullchip)
-    return (;
-        placement_registry_path,
-        connectivity_path,
-        placement_graph_svg_path=graphics_paths.svg_path,
-        placement_graph_png_path=graphics_paths.png_path,
-        placement_graph_pdf_path=graphics_paths.pdf_path
-    )
+    return (; gds_path, graph_svg_path, layout_svg_path)
 end
 
 function _reset_output_dirs(build_dir::AbstractString, results_dir::Union{Nothing, AbstractString}=nothing)
@@ -1342,44 +1756,23 @@ function build_fullchip(spec::TrailBlazerFullChipSpec; output_dir::AbstractStrin
     _reset_output_dirs(output_dir)
     work_dir = joinpath(output_dir, "work")
     _stage_trailblazer_sources(work_dir)
-
-    layout = _build_component_registry(spec)
-    _render_selected_routes!(layout, spec)
-
+    build = _plan_trailblazer_schematic(spec; graph_name="trailblazer_fullchip", log_dir=work_dir)
+    render!(build.schematic.coordinate_system, _trailblazer_chip_geometry(spec), LayerVocabulary.CHIP_AREA)
     hooks_path = joinpath(output_dir, "hook_registry.json")
-    outputs = _write_trailblazer_layout_outputs(
+    route_registry_path = joinpath(output_dir, "route_registry.json")
+    outputs = _write_trailblazer_contract_outputs(
         output_dir,
-        layout.coordinate_system,
+        build.schematic,
+        spec,
         "trailblazer_fullchip";
         save_layout_graphics=save_layout_graphics,
         fullchip=true
     )
-    inspection_outputs = _write_trailblazer_inspection_outputs(output_dir, layout, spec; fullchip=true)
-    _serialize_hooks(hooks_path, layout.placed)
+    _serialize_schematic_hooks(hooks_path, build)
+    _serialize_route_registry(route_registry_path, build, spec)
 
-    return (; outputs..., inspection_outputs..., hooks_path, build_dir=output_dir)
+    return (; outputs..., hooks_path, route_registry_path, build_dir=output_dir)
 end
-
-const Q1_SLICE_COMPONENTS = [
-    "Q_1",
-    "Q_2",
-    "Q_8",
-    "Launch_Q_Read",
-    "bridge_Q_out",
-    "bridge_Q_in",
-    "highC_PF_TL",
-    "otg_PF",
-    "readout1_short",
-]
-
-const Q1_SLICE_ROUTES = [
-    "Bus_12",
-    "Bus_81",
-    "PF",
-    "TL1",
-    "TL2",
-    "readout_res_1",
-]
 
 function _add_port_marker!(cs::CoordinateSystem, point::Point, width, index::Int)
     marker = centered(Rectangle(width, width), on_pt=point)
@@ -1387,40 +1780,125 @@ function _add_port_marker!(cs::CoordinateSystem, point::Point, width, index::Int
     render!(cs, only_simulated(marker), meta)
 end
 
-function _slice_geometry(spec::TrailBlazerFullChipSpec)
-    component_names = Set(Q1_SLICE_COMPONENTS)
-    for route in spec.routes
-        if route.name in Q1_SLICE_ROUTES
-            push!(component_names, route.start_component)
-            push!(component_names, route.end_component)
+function _preferred_port_hook_name(kind::Symbol)
+    kind == :launch && return :tie
+    kind == :open_termination && return :open
+    kind == :short_termination && return :short
+    return nothing
+end
+
+_port_marker_width(kind::Symbol) = kind == :launch ? 30μm : 20μm
+
+function _slice_port_specs(build::TrailBlazerSchematicBuild, spec::TrailBlazerFullChipSpec, membership)
+    kind_map = _component_kind_map(spec)
+    hook_map = _schematic_component_hooks(build)
+    port_specs = NamedTuple[]
+    for (index, component_name) in enumerate(membership.external_port_components)
+        component_hooks = hook_map[component_name]
+        kind = get(kind_map, component_name, :component)
+        preferred = _preferred_port_hook_name(kind)
+        hook_name = if !isnothing(preferred) && haskey(component_hooks, preferred)
+            preferred
+        else
+            first(sort!(collect(keys(component_hooks)); by=string))
         end
+        push!(
+            port_specs,
+            (
+                index=index,
+                group_name="port_$(index)",
+                component_name=component_name,
+                hook_name=hook_name,
+                hook=component_hooks[hook_name],
+                kind=kind
+            )
+        )
     end
+    return port_specs, hook_map
+end
 
-    layout = _build_component_registry(spec; component_filter=collect(component_names), lumped_qubits=["Q_1"])
-    _render_selected_routes!(layout, spec; route_filter=Q1_SLICE_ROUTES)
-    cs = layout.coordinate_system
-
-    launch_hook = layout.placed["Launch_Q_Read"].hooks[:tie]
-    short_hook = layout.placed["readout1_short"].hooks[:short]
-    junction_hook = layout.placed["Q_1"].hooks[:junction]
-    _add_port_marker!(cs, launch_hook.p, 30μm, 1)
-    _add_port_marker!(cs, short_hook.p, 20μm, 2)
-
-    sim_area = only(halo(bounds(cs), 0.8mm))
-    chip_area = only(halo(bounds(cs), 0.9mm))
-    render!(cs, sim_area, LayerVocabulary.SIMULATED_AREA)
-    render!(cs, sim_area, LayerVocabulary.WRITEABLE_AREA)
-    render!(cs, chip_area, LayerVocabulary.CHIP_AREA)
-    return layout, launch_hook, short_hook, junction_hook
+function _write_slice_membership(path::AbstractString, membership, port_specs)
+    data = Dict(
+        "target_qubit" => membership.target_qubit,
+        "context" => String(membership.context),
+        "component_names" => membership.component_names,
+        "route_names" => membership.route_names,
+        "external_port_components" => membership.external_port_components,
+        "external_ports" => [
+            Dict(
+                "index" => port.index,
+                "group_name" => port.group_name,
+                "component_name" => port.component_name,
+                "hook_name" => String(port.hook_name)
+            ) for port in port_specs
+        ],
+    )
+    open(path, "w") do io
+        JSON.print(io, data, 2)
+        write(io, '\n')
+    end
+    return path
 end
 
 function _direction_vector(hook::Hook)
     return [Float64(cos(in_direction(hook))), Float64(sin(in_direction(hook))), 0.0]
 end
 
-function _slice_config(sm::SolidModel, launch_hook::Hook, short_hook::Hook, junction_hook::Hook, q1_inductance_h::Float64; solver_order::Int, results_dir::AbstractString, mesh_path::AbstractString)
+function _slice_schematic_build(spec::TrailBlazerFullChipSpec, target_qubit::AbstractString; log_dir::AbstractString)
+    membership = derive_slice_membership(spec, target_qubit)
+    build = _plan_trailblazer_schematic(
+        spec;
+        graph_name=_slice_graph_name(target_qubit),
+        log_dir=log_dir,
+        component_filter=membership.component_names,
+        route_filter=membership.route_names,
+        lumped_qubits=[target_qubit]
+    )
+    cs = build.schematic.coordinate_system
+    port_specs, hook_map = _slice_port_specs(build, spec, membership)
+    junction_hook = hook_map[target_qubit][:junction]
+
+    for port in port_specs
+        _add_port_marker!(cs, port.hook.p, _port_marker_width(port.kind), port.index)
+    end
+
+    sim_area = only(halo(bounds(cs), 0.8mm))
+    chip_area = only(halo(bounds(cs), 0.9mm))
+    render!(cs, sim_area, LayerVocabulary.SIMULATED_AREA)
+    render!(cs, sim_area, LayerVocabulary.WRITEABLE_AREA)
+    render!(cs, chip_area, LayerVocabulary.CHIP_AREA)
+    return membership, build, port_specs, junction_hook
+end
+
+function _slice_config(
+    sm::SolidModel,
+    port_specs,
+    junction_hook::Hook,
+    qubit_inductance_h::Float64;
+    solver_order::Int,
+    results_dir::AbstractString,
+    mesh_path::AbstractString
+)
     attrs = SolidModels.attributes(sm)
     lumped_attr = haskey(attrs, "lumped_element") ? attrs["lumped_element"] : attrs["lumped_element_1"]
+    lumped_ports = Any[
+        Dict(
+            "Index" => port.index,
+            "Attributes" => [attrs[port.group_name]],
+            "R" => 50,
+            "Direction" => _direction_vector(port.hook)
+        ) for port in port_specs
+    ]
+    push!(
+        lumped_ports,
+        Dict(
+            "Index" => length(port_specs) + 1,
+            "Attributes" => [lumped_attr],
+            "L" => qubit_inductance_h,
+            "C" => 0.0,
+            "Direction" => _direction_vector(junction_hook)
+        )
+    )
     return Dict(
         "Problem" => Dict(
             "Type" => "Eigenmode",
@@ -1447,11 +1925,7 @@ function _slice_config(sm::SolidModel, launch_hook::Hook, short_hook::Hook, junc
         "Boundaries" => Dict(
             "PEC" => Dict("Attributes" => [attrs["metal"]]),
             "Absorbing" => Dict("Attributes" => [attrs["exterior_boundary"]], "Order" => 1),
-            "LumpedPort" => [
-                Dict("Index" => 1, "Attributes" => [attrs["port_1"]], "R" => 50, "Direction" => _direction_vector(launch_hook)),
-                Dict("Index" => 2, "Attributes" => [attrs["port_2"]], "R" => 50, "Direction" => _direction_vector(short_hook)),
-                Dict("Index" => 3, "Attributes" => [lumped_attr], "L" => q1_inductance_h, "C" => 0.0, "Direction" => _direction_vector(junction_hook))
-            ]
+            "LumpedPort" => lumped_ports
         ),
         "Solver" => Dict(
             "Order" => solver_order,
@@ -1533,57 +2007,90 @@ function _render_slice_solidmodel!(sm::SolidModel, cs::CoordinateSystem, target:
     )
 end
 
-function _slice_solidmodel(layout::TrailBlazerLayoutBuild; name::AbstractString="trailblazer_q1_slice", mesh_order::Int=2)
+function _slice_solidmodel(cs::CoordinateSystem; name::AbstractString="trailblazer_q1_slice", mesh_order::Int=2, boundary_groups::Vector{String}=String[])
     sm = SolidModel(name, overwrite=true)
     SolidModels.set_gmsh_option("General.Verbosity", 1)
     SolidModels.mesh_order(mesh_order)
-    target = ExamplePDK.singlechip_solidmodel_target("port_1", "port_2", "lumped_element_1")
-    _render_slice_solidmodel!(sm, layout.coordinate_system, target)
+    target = ExamplePDK.singlechip_solidmodel_target(vcat(boundary_groups, ["lumped_element_1"]))
+    _render_slice_solidmodel!(sm, cs, target)
     return sm
 end
 
-function inspect_slice_solidmodel(spec::TrailBlazerFullChipSpec, slice::Symbol=:q1_purcell; mesh_dim::Int=3, mesh_order::Int=2)
-    slice == :q1_purcell || error("Only :q1_purcell is implemented in v1.")
-    layout, _, _, _ = _slice_geometry(spec)
-    sm = _slice_solidmodel(layout; name="trailblazer_q1_slice_live", mesh_order=mesh_order)
+function inspect_slice_solidmodel(spec::TrailBlazerFullChipSpec, target="Q_1"; mesh_dim::Int=3, mesh_order::Int=2, context::Symbol=:local_bus)
+    context == :local_bus || error("Only :local_bus is implemented in v1.")
+    target_qubit = _normalize_slice_target(target)
+    membership, build, port_specs, _ = _slice_schematic_build(spec, target_qubit; log_dir=mktempdir())
+    sm = _slice_solidmodel(
+        build.schematic.coordinate_system;
+        name=_slice_live_name(target_qubit),
+        mesh_order=mesh_order,
+        boundary_groups=[port.group_name for port in port_specs]
+    )
     SolidModels.gmsh.model.mesh.generate(mesh_dim)
     SolidModels.gmsh.fltk.run()
     return sm
 end
 
-function build_slice(spec::TrailBlazerFullChipSpec, slice::Symbol=:q1_purcell; solver_order::Int=1, output_dir::AbstractString=TRAILBLAZER_SLICE_BUILD_DIR, results_dir::AbstractString=TRAILBLAZER_SLICE_RESULTS_DIR, save_layout_graphics::Bool=true)
-    slice == :q1_purcell || error("Only :q1_purcell is implemented in v1.")
+function build_slice(
+    spec::TrailBlazerFullChipSpec,
+    target="Q_1";
+    solver_order::Int=1,
+    context::Symbol=:local_bus,
+    output_dir::Union{Nothing, AbstractString}=nothing,
+    results_dir::Union{Nothing, AbstractString}=nothing,
+    save_layout_graphics::Bool=true
+)
+    context == :local_bus || error("Only :local_bus is implemented in v1.")
+    target_qubit = _normalize_slice_target(target)
+    output_dir = isnothing(output_dir) ? _slice_build_dir(target_qubit) : String(output_dir)
+    results_dir = isnothing(results_dir) ? _slice_results_dir(target_qubit) : String(results_dir)
     _reset_output_dirs(output_dir, results_dir)
     work_dir = joinpath(output_dir, "work")
     _stage_trailblazer_sources(work_dir)
 
-    layout, launch_hook, short_hook, junction_hook = _slice_geometry(spec)
+    membership, build, port_specs, junction_hook = _slice_schematic_build(spec, target_qubit; log_dir=work_dir)
     hooks_path = joinpath(output_dir, "hook_registry.json")
-    _serialize_hooks(hooks_path, layout.placed)
+    route_registry_path = joinpath(output_dir, "route_registry.json")
+    membership_path = joinpath(output_dir, "slice_membership.json")
+    _serialize_schematic_hooks(hooks_path, build)
+    _serialize_route_registry(route_registry_path, build, spec)
+    _write_slice_membership(membership_path, membership, port_specs)
 
     mesh_path = joinpath(output_dir, "device.msh")
     config_path = joinpath(output_dir, "palace.json")
 
-    sm = _slice_solidmodel(layout)
+    sm = _slice_solidmodel(
+        build.schematic.coordinate_system;
+        name=_slice_cell_name(target_qubit),
+        boundary_groups=[port.group_name for port in port_specs]
+    )
 
     SolidModels.gmsh.model.mesh.generate(3)
     SolidModels.set_gmsh_option("Mesh.MshFileVersion", 2.2)
     save(mesh_path, sm)
 
-    outputs = _write_trailblazer_layout_outputs(
+    outputs = _write_trailblazer_contract_outputs(
         output_dir,
-        layout.coordinate_system,
-        "trailblazer_q1_slice";
+        build.schematic,
+        spec,
+        _slice_cell_name(target_qubit);
         save_layout_graphics=save_layout_graphics
     )
-    inspection_outputs = _write_trailblazer_inspection_outputs(output_dir, layout, spec; route_filter=Q1_SLICE_ROUTES)
 
-    q1 = only(filter(qubit -> qubit.name == "Q_1", spec.qubits))
-    config = _slice_config(sm, launch_hook, short_hook, junction_hook, q1.hfss_inductance_nh * 1.0e-9; solver_order=solver_order, results_dir=results_dir, mesh_path=mesh_path)
+    qubit = only(filter(qubit -> qubit.name == target_qubit, spec.qubits))
+    config = _slice_config(
+        sm,
+        port_specs,
+        junction_hook,
+        qubit.hfss_inductance_nh * 1.0e-9;
+        solver_order=solver_order,
+        results_dir=results_dir,
+        mesh_path=mesh_path
+    )
     open(config_path, "w") do io
         JSON.print(io, config, 2)
         write(io, '\n')
     end
 
-    return (; mesh_path, outputs..., inspection_outputs..., config_path, hooks_path, results_dir)
+    return (; target_qubit, mesh_path, outputs..., config_path, hooks_path, route_registry_path, membership_path, results_dir)
 end

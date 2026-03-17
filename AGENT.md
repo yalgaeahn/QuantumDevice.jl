@@ -12,7 +12,8 @@ Today, this repository is still script-driven.
 
 - There is now an emerging shared Julia module under `src/QuantumDevice.jl`, with Berkeley TrailBlazer logic in `src/TrailBlazer.jl`.
 - The workflow is still primarily driven by shell and Julia scripts under `scripts/`.
-- The main supported cases are `transmon`, `star-transmon`, the pilot `qmetal-transmon` migration, and the Berkeley TrailBlazer full-chip plus `Q_1` slice migration.
+- The main supported cases are `transmon`, `star-transmon`, the pilot `qmetal-transmon` migration, and the Berkeley TrailBlazer full-chip plus local-context slice migration.
+- There is also a local `qpu17-reference` build that mirrors the upstream schematic-driven example contract.
 - Julia package dependencies are declared in `Project.toml`, but the repository still behaves more like a script-owned workspace than a finished package.
 
 ## Source Of Truth
@@ -23,9 +24,9 @@ Treat these files as authoritative:
 - `scripts/build_star_transmon.jl`: defines the local star-transmon plus filtered-readout case
 - `scripts/build_qmetal_transmon.jl`: reconstructs the pilot qiskit-metal single-transmon case from a normalized migration spec
 - `scripts/export_trailblazer_spec.py`: stages the Berkeley notebook and reference GDS and emits the normalized full-chip migration spec
-- `src/TrailBlazer.jl`: native TrailBlazer component definitions, full-chip builder, and `Q_1` slice builder
+- `src/TrailBlazer.jl`: native TrailBlazer component definitions, full-chip builder, and graph-derived local-context slice builder
 - `scripts/build_trailblazer_fullchip.jl`: rebuilds the Berkeley TrailBlazer full chip as a native `DeviceLayout.jl` layout
-- `scripts/build_trailblazer_q1_slice.jl`: derives and emits the first PALACE-ready Berkeley slice
+- `scripts/build_trailblazer_slice.jl`: derives and emits a target-qubit Berkeley local-context slice
 - `scripts/run_palace.sh`: shared PALACE runtime wrapper
 - `README.md`: operator-facing workflow and environment assumptions
 - `cases/`: case notes and context, not the main implementation
@@ -36,7 +37,6 @@ Treat these directories as generated output unless the task is specifically abou
 
 - `build/`
 - `results/`
-- `figures/`
 
 Do not hand-edit staged files under `build/transmon/work/` as if they were maintained source.
 
@@ -68,10 +68,12 @@ Instantiate Julia dependencies:
 Build the reference cases:
 
 ```bash
+./scripts/build_qpu17_reference.sh
 ./scripts/build_transmon.sh
 ./scripts/build_star_transmon.sh
 ./scripts/build_qmetal_transmon.sh
 ./scripts/build_trailblazer_fullchip.sh
+./scripts/build_trailblazer_slice.sh Q_1
 ./scripts/build_trailblazer_q1_slice.sh
 ```
 
@@ -84,16 +86,20 @@ Run PALACE:
 ./scripts/run_star_transmon.sh
 ./scripts/run_qmetal_transmon.sh 1
 ./scripts/run_qmetal_transmon.sh
+./scripts/run_trailblazer_slice.sh Q_1 1
 ./scripts/run_trailblazer_q1_slice.sh 1
 ./scripts/run_trailblazer_q1_slice.sh
 ```
 
-Inspect or render results:
+Inspect results:
 
 ```bash
 ./scripts/open_paraview.sh
+./scripts/open_trailblazer_slice.sh Q_1
+./scripts/open_trailblazer_slice_mesh.sh Q_1
 ./scripts/open_star_transmon.sh
-./scripts/render_star_transmon_visuals.sh
+./scripts/open_trailblazer_q1_slice.sh
+./scripts/open_trailblazer_q1_slice_mesh.sh
 ```
 
 ## Expected Contribution Pattern
@@ -126,7 +132,7 @@ For documentation changes:
 - `scripts/export_trailblazer_spec.py` assumes the Berkeley notebook cells up to the layout/control-line section remain semantically compatible with the stub execution environment.
 - `src/TrailBlazer.jl` assumes the TrailBlazer migration spec shape and route/component naming stay aligned with the exporter.
 - `scripts/run_palace.sh` assumes the trusted runtime is `MPI ranks x 1 OpenMP thread`.
-- Visualization scripts under `scripts/` assume ParaView is installed in the documented macOS locations.
+- Result inspection wrappers under `scripts/` assume ParaView or Gmsh is installed in the documented macOS locations.
 
 ## Recommended Next Refactor
 

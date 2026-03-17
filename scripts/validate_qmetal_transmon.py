@@ -12,6 +12,8 @@ SPEC_PATH = INPUT_DIR / "migration_spec.json"
 SOURCE_PATH = INPUT_DIR / "source_design.py"
 REFERENCE_GDS = INPUT_DIR / "reference_layout.gds"
 GENERATED_GDS = ROOT / "build" / "qmetal-transmon" / "device.gds"
+GRAPH_SVG = ROOT / "build" / "qmetal-transmon" / "schematic_graph.svg"
+LAYOUT_SVG = ROOT / "build" / "qmetal-transmon" / "layout.svg"
 CONFIG_PATH = ROOT / "build" / "qmetal-transmon" / "palace.json"
 
 
@@ -91,8 +93,14 @@ def validate_parameter_parity(source: dict, spec: dict) -> list[str]:
 
 
 def validate_config(spec: dict) -> list[str]:
-    if not CONFIG_PATH.is_file():
-        return [f"Missing generated config: {CONFIG_PATH}"]
+    errors = []
+    for path in [GRAPH_SVG, LAYOUT_SVG, CONFIG_PATH]:
+        if not path.is_file():
+            errors.append(f"Missing generated artifact: {path}")
+        elif path.suffix == ".svg" and path.stat().st_size == 0:
+            errors.append(f"Empty SVG artifact: {path}")
+    if errors:
+        return errors
 
     config = load_json(CONFIG_PATH)
     required_sections = ["Problem", "Model", "Domains", "Boundaries", "Solver"]

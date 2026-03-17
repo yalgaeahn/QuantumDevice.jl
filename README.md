@@ -5,21 +5,22 @@ Native macOS scaffold for `DeviceLayout.jl`, `Palace`, and ParaView on Apple Sil
 ## Layout
 
 - `cases/transmon/`: case-specific notes and upstream example staging
+- `cases/qpu17-reference/`: local reference notes for the upstream `DemoQPU17` schematic flow
 - `cases/star-transmon/`: workspace-local star-transmon + filtered-readout case notes
 - `cases/qmetal-transmon/`: pilot qiskit-metal migration case notes
-- `cases/trailblazer-fullchip/`: Berkeley TrailBlazer migration notes for the full chip and Q1 slice
+- `cases/trailblazer-fullchip/`: Berkeley TrailBlazer migration notes for the full chip and local-context slice workflow
 - `inputs/qiskit-metal/qmetal-transmon/`: staged source design, migration spec, and optional reference GDS
 - `inputs/qiskit-metal/trailblazer-fullchip/`: staged Berkeley TrailBlazer notebook, reference GDS, and normalized full-chip spec
-- `build/transmon/`: generated mesh and Palace input files
-- `build/star-transmon/`: generated mesh and Palace input files for the second case
-- `build/qmetal-transmon/`: generated mesh and Palace input files for the migrated case
-- `build/trailblazer-fullchip/`: generated full-chip GDS, layout graphics, placement-review artifacts, and hook registry for the Berkeley migration
-- `build/trailblazer-q1-purcell-slice/`: generated Q1 slice mesh, GDS, layout graphics, placement-review artifacts, and Palace inputs
+- `build/transmon/`: generated schematic graph, layout, mesh, and Palace input files
+- `build/qpu17-reference/`: generated schematic graph, layout, and GDS for the upstream QPU17 reference path
+- `build/star-transmon/`: generated schematic graph, layout, mesh, and Palace input files for the second case
+- `build/qmetal-transmon/`: generated schematic graph, layout, mesh, and Palace input files for the migrated case
+- `build/trailblazer-fullchip/`: generated full-chip schematic graph, layout, GDS, staged source inputs, and hook registry for the Berkeley migration
+- `build/trailblazer-q1-local-context/`: generated Q1 local-context slice schematic graph, layout, mesh, GDS, and Palace inputs
 - `results/transmon/`: Palace outputs
 - `results/star-transmon/`: Palace outputs for the second case
 - `results/qmetal-transmon/`: Palace outputs for the migrated case
-- `results/trailblazer-q1-purcell-slice/`: Palace outputs for the Berkeley Q1 slice
-- `figures/trailblazer-q1-purcell-slice/`: static TrailBlazer screenshots and summary graphics
+- `results/trailblazer-q1-local-context/`: Palace outputs for the Berkeley Q1 local-context slice
 - `scripts/`: build, solve, and visualization entrypoints
 - `.julia_depot/`: workspace-local Julia depot used by the helper scripts
 
@@ -58,6 +59,12 @@ Build the documented single-transmon case:
 ./scripts/build_transmon.sh
 ```
 
+Build the local QPU17 reference case aligned with the upstream schematic-driven tutorial:
+
+```bash
+./scripts/build_qpu17_reference.sh
+```
+
 Build the workspace star-transmon case derived from the `DemoQPU17` component set:
 
 ```bash
@@ -82,7 +89,14 @@ Build the native Berkeley TrailBlazer full-chip migration:
 ./scripts/build_trailblazer_fullchip.sh
 ```
 
-Build the first PALACE-ready Berkeley slice centered on `Q_1` and the Purcell chain:
+Build a graph-derived Berkeley local-context slice for any target qubit:
+
+```bash
+./scripts/build_trailblazer_slice.sh Q_1
+./scripts/build_trailblazer_slice.sh Q_2 2
+```
+
+The existing `Q_1` convenience wrapper still works and now targets the canonical `trailblazer-q1-local-context` outputs:
 
 ```bash
 ./scripts/build_trailblazer_q1_slice.sh
@@ -115,11 +129,12 @@ Run the migrated qiskit-metal transmon case:
 ./scripts/run_qmetal_transmon.sh
 ```
 
-Run the Berkeley TrailBlazer `Q_1` Purcell slice:
+Run the Berkeley TrailBlazer `Q_1` local-context slice:
 
 ```bash
 ./scripts/run_trailblazer_q1_slice.sh 1
 ./scripts/run_trailblazer_q1_slice.sh
+./scripts/run_trailblazer_slice.sh Q_2 1
 ```
 
 Validate parameter parity, config shape, and optional GDS fidelity for the migrated case:
@@ -128,7 +143,7 @@ Validate parameter parity, config shape, and optional GDS fidelity for the migra
 ./scripts/validate_qmetal_transmon.sh
 ```
 
-Validate the Berkeley TrailBlazer notebook export, full-chip artifacts, and Q1 slice artifacts:
+Validate the Berkeley TrailBlazer notebook export, full-chip artifacts, and Q1 local-context slice artifacts:
 
 ```bash
 ./scripts/validate_trailblazer_fullchip.sh
@@ -140,29 +155,20 @@ Open ParaView on the star-transmon results:
 ./scripts/open_star_transmon.sh
 ```
 
-Open ParaView on the TrailBlazer Q1 slice results:
+Open ParaView on the TrailBlazer local-context slice results:
 
 ```bash
 ./scripts/open_trailblazer_q1_slice.sh
+./scripts/open_trailblazer_slice.sh Q_2
 ```
 
-Open the built TrailBlazer Q1 slice mesh in Gmsh, or rebuild and inspect it live:
+Open the built TrailBlazer local-context slice mesh in Gmsh, or rebuild and inspect it live:
 
 ```bash
 ./scripts/open_trailblazer_q1_slice_mesh.sh
 ./scripts/open_trailblazer_q1_slice_mesh.sh --live
-```
-
-Render static screenshots from the star-transmon ParaView outputs:
-
-```bash
-./scripts/render_star_transmon_visuals.sh
-```
-
-Render static screenshots and an eigenmode summary for the TrailBlazer Q1 slice:
-
-```bash
-./scripts/render_trailblazer_q1_slice_visuals.sh
+./scripts/open_trailblazer_slice_mesh.sh Q_2
+./scripts/open_trailblazer_slice_mesh.sh Q_2 --live
 ```
 
 Tune MPI rank count explicitly on this Mac Studio:
@@ -187,13 +193,14 @@ Install the official stable ParaView macOS app from upstream:
 ## Notes
 
 - The build step stages the upstream `DeviceLayout.jl` single-transmon example into `build/transmon/work/` so all generated files stay inside this workspace.
+- The repo-wide build contract is source-aligned: inspect `build/<case>/schematic_graph.svg` first, then `build/<case>/layout.svg`, then mesh/GDS artifacts, and only then `results/<case>/` for PALACE outputs.
+- The local `qpu17-reference` case is the contract reference for schematic-driven builds in this repo. It stages and runs the upstream `DemoQPU17` example while emitting the same `schematic_graph.svg` / `layout.svg` / `device.gds` artifact set expected of local cases.
 - The second case in `build/star-transmon/` is a workspace-local example built from `ExampleStarTransmon` and `ExampleFilteredHairpinReadout`, the same component family used in the `DemoQPU17` layout example.
 - The `qmetal-transmon` case is a native `DeviceLayout.jl` reconstruction driven by a staged qiskit-metal-style source export in `inputs/qiskit-metal/qmetal-transmon/`.
 - The migration workflow keeps the qiskit-metal Python-style parameter export as the semantic source of truth and treats `reference_layout.gds` as an optional validation artifact.
-- The Berkeley TrailBlazer migration flow stages the real qiskit-metal notebook and reference GDS under `inputs/qiskit-metal/trailblazer-fullchip/`, exports a normalized full-chip spec, rebuilds the layout natively in `DeviceLayout.jl`, and derives the first PALACE model from a `Q_1`-anchored Purcell slice.
-- The TrailBlazer builders now emit a standardized placement-review bundle inspired by the upstream QPU17 inspection style: raw `layout.*` geometry views plus `placement_graph.*`, `placement_registry.json`, and `connectivity.json` so you can verify where each component landed and how routes connect before meshing or PALACE.
-- `scripts/open_trailblazer_q1_slice_mesh.sh` mirrors the upstream single-transmon mesh-inspection workflow: it opens the built `.msh` in Gmsh by default, and `--live` rebuilds the slice into an in-memory `SolidModel` before launching the Gmsh FLTK viewer.
-- `scripts/render_trailblazer_q1_slice_visuals.sh` writes TrailBlazer screenshots and `eigenmode_summary.svg` under `figures/trailblazer-q1-purcell-slice/`.
+- The Berkeley TrailBlazer migration flow stages the real qiskit-metal notebook and reference GDS under `inputs/qiskit-metal/trailblazer-fullchip/`, exports a normalized full-chip spec, rebuilds the layout from a real `SchematicGraph` / `plan` / `check!` flow, and derives per-qubit local-context slices from graph connectivity.
+- Purcell is now strict graph-derived slice context. With the current staged Berkeley notebook, `TL1` remains commented out, so the `Q_1` local-context slice excludes the disconnected Purcell branch until the source notebook exposes that connection as a real route.
+- `scripts/open_trailblazer_slice_mesh.sh` mirrors the upstream single-transmon mesh-inspection workflow: it opens the built `.msh` in Gmsh by default, and `--live` rebuilds the selected slice into an in-memory `SolidModel` before launching the Gmsh FLTK viewer.
 - The TrailBlazer mesh wrapper expects `gmsh` on `PATH` or a `Gmsh.app` install. If it is missing, install it with `brew install gmsh` or set `GMSH_BIN` / `GMSH_APP`.
 - The TrailBlazer validation contract preserves GDS layers `1/10` and `1/100` as the required geometry-comparison layers.
 - The star-transmon case has been validated with native Palace on this Mac Studio:

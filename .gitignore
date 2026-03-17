@@ -4,5 +4,4 @@
 .spack/
 build/
 results/
-figures/
 *.log

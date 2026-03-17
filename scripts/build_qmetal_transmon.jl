@@ -7,6 +7,8 @@ using JSON
 using DeviceLayout, DeviceLayout.SchematicDrivenLayout, DeviceLayout.PreferredUnits
 using FileIO
 
+include(joinpath(ROOT, "src", "SourceAlignedArtifacts.jl"))
+
 import .SchematicDrivenLayout.ExamplePDK
 import .SchematicDrivenLayout.ExamplePDK: LayerVocabulary, L1_TARGET, add_bridges!
 using .ExamplePDK.Transmons, .ExamplePDK.ReadoutResonators
@@ -19,6 +21,8 @@ const RESULTS_DIR = joinpath(ROOT, "results", CASE_NAME)
 const WORK_DIR = joinpath(BUILD_DIR, "work")
 const BUILD_MESH = joinpath(BUILD_DIR, "device.msh")
 const BUILD_GDS = joinpath(BUILD_DIR, "device.gds")
+const BUILD_GRAPH = joinpath(BUILD_DIR, "schematic_graph.svg")
+const BUILD_LAYOUT = joinpath(BUILD_DIR, "layout.svg")
 const BUILD_CONFIG = joinpath(BUILD_DIR, "palace.json")
 const INPUT_DIR = joinpath(ROOT, "inputs", "qiskit-metal", CASE_NAME)
 const SPEC_PATH = joinpath(INPUT_DIR, "migration_spec.json")
@@ -295,14 +299,12 @@ function build_layout(spec::QMetalTransmonSpec; save_mesh::Bool=false, save_gds:
         save(joinpath(WORK_DIR, "qmetal_transmon.msh2"), sm)
     end
 
-    if save_gds
-        cell = Cell(CELL_NAME, nm)
-        render!(cell, floorplan, L1_TARGET, strict=:no, simulation=true)
-        flatten!(cell)
-        save(joinpath(WORK_DIR, "qmetal_transmon.gds"), cell)
-    end
+    cell = Cell(CELL_NAME, nm)
+    render!(cell, floorplan, L1_TARGET, strict=:no, simulation=true)
+    flatten!(cell)
+    save_gds && save(joinpath(WORK_DIR, "qmetal_transmon.gds"), cell)
 
-    return sm
+    return (; graph, schematic=floorplan, layout_cell=cell, sm)
 end
 
 function locate_mesh()
@@ -414,11 +416,13 @@ end
 
 function build_case(spec::QMetalTransmonSpec; solver_order::Int=spec.solver.order_default)
     stage_source_artifacts()
-    sm = build_layout(spec; save_mesh=true, save_gds=true)
+    case_data = build_layout(spec; save_mesh=true, save_gds=true)
     cp(locate_mesh(), BUILD_MESH; force=true)
     gds = locate_gds()
     gds === nothing || cp(gds, BUILD_GDS; force=true)
-    write_config(configfile(sm, spec; solver_order))
+    write_schematic_graph_svg(BUILD_GRAPH, case_data.schematic)
+    write_layout_svg(BUILD_LAYOUT, case_data.layout_cell)
+    write_config(configfile(case_data.sm, spec; solver_order))
 end
 
 function parse_solver_order(args, spec::QMetalTransmonSpec)
@@ -437,6 +441,8 @@ function main(args)
 
     println("Generated mesh: $(BUILD_MESH)")
     println("Generated GDS: $(BUILD_GDS)")
+    println("Generated schematic graph: $(BUILD_GRAPH)")
+    println("Generated layout SVG: $(BUILD_LAYOUT)")
     println("Generated Palace config: $(BUILD_CONFIG)")
     println("Palace results directory: $(RESULTS_DIR)")
 end

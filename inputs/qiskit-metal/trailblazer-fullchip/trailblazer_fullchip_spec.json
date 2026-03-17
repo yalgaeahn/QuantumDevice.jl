@@ -2331,19 +2331,6 @@
       ]
     }
   ],
-  "purcell": {
-    "launch_name": "Launch_Q_Read",
-    "helper_launch_names": [
-      "bridge_Q_in",
-      "bridge_Q_out"
-    ],
-    "capacitor_name": "highC_PF_TL",
-    "open_name": "otg_PF",
-    "route_names": [
-      "PF",
-      "TL2"
-    ]
-  },
   "provenance": {
     "notebook_source_path": "/Users/yalgaeahn/Research/qiskit-metal-gyum/Berkeley_TrailBlazer_mimic_fullchip_1_1design_change.ipynb",
     "reference_gds_source_path": "/Users/yalgaeahn/Research/qiskit-metal-gyum/Berkeley_TrailBlazer_mimic_fullchip_v1_1.gds",
@@ -2369,8 +2356,8 @@
     "notebook_target_ghz": 5.2,
     "notebook_mode_count": 20,
     "notebook_max_passes": 20,
-    "q1_slice_target_ghz": 5.2,
-    "q1_slice_mode_count": 6
+    "local_context_slice_target_ghz": 5.2,
+    "local_context_slice_mode_count": 6
   },
   "validation": {
     "required_counts": {

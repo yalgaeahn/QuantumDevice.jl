@@ -7,6 +7,8 @@ using JSON
 using DeviceLayout, DeviceLayout.SchematicDrivenLayout, DeviceLayout.PreferredUnits
 using FileIO
 
+include(joinpath(ROOT, "src", "SourceAlignedArtifacts.jl"))
+
 import .SchematicDrivenLayout.ExamplePDK
 import .SchematicDrivenLayout.ExamplePDK: LayerVocabulary, L1_TARGET
 using .ExamplePDK.Transmons, .ExamplePDK.ReadoutResonators
@@ -19,6 +21,8 @@ const RESULTS_DIR = joinpath(ROOT, "results", CASE_NAME)
 const WORK_DIR = joinpath(BUILD_DIR, "work")
 const BUILD_MESH = joinpath(BUILD_DIR, "device.msh")
 const BUILD_GDS = joinpath(BUILD_DIR, "device.gds")
+const BUILD_GRAPH = joinpath(BUILD_DIR, "schematic_graph.svg")
+const BUILD_LAYOUT = joinpath(BUILD_DIR, "layout.svg")
 const BUILD_CONFIG = joinpath(BUILD_DIR, "palace.json")
 
 function reset_workdir()
@@ -137,14 +141,12 @@ function star_filtered_transmon(; save_mesh::Bool=false, save_gds::Bool=false, m
         save(joinpath(WORK_DIR, "star_transmon.msh2"), sm)
     end
 
-    if save_gds
-        c = Cell(CELL_NAME, nm)
-        render!(c, floorplan, L1_TARGET, strict=:no, simulation=true)
-        flatten!(c)
-        save(joinpath(WORK_DIR, "star_transmon.gds"), c)
-    end
+    cell = Cell(CELL_NAME, nm)
+    render!(cell, floorplan, L1_TARGET, strict=:no, simulation=true)
+    flatten!(cell)
+    save_gds && save(joinpath(WORK_DIR, "star_transmon.gds"), cell)
 
-    return (; sm, port_directions)
+    return (; graph=g, schematic=floorplan, layout_cell=cell, sm, port_directions)
 end
 
 function configfile(sm::SolidModel; solver_order::Int=1, amr::Int=0, port_directions=nothing)
@@ -260,6 +262,8 @@ function build_case(; solver_order::Int=1)
     cp(locate_mesh(), BUILD_MESH; force=true)
     gds = locate_gds()
     gds === nothing || cp(gds, BUILD_GDS; force=true)
+    write_schematic_graph_svg(BUILD_GRAPH, case_data.schematic)
+    write_layout_svg(BUILD_LAYOUT, case_data.layout_cell)
     write_config(config)
 end
 
@@ -269,6 +273,8 @@ function main(args)
     build_case(; solver_order)
 
     println("Generated mesh: $(BUILD_MESH)")
+    println("Generated schematic graph: $(BUILD_GRAPH)")
+    println("Generated layout SVG: $(BUILD_LAYOUT)")
     println("Generated Palace config: $(BUILD_CONFIG)")
     println("Palace results directory: $(RESULTS_DIR)")
 end
